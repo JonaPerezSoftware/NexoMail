@@ -14,7 +14,7 @@ export async function installGoogleAuth(host){
   host.googleSessionId=()=>metadata?.sessionId || '';
 
   async function authorize(clientId,{interactive,email}={interactive:true}){
-    if(!clientId?.endsWith('.apps.googleusercontent.com'))throw new Error('Configura el Client ID de Google en las opciones de EmailAgent.');
+    if(!clientId?.endsWith('.apps.googleusercontent.com'))throw new Error('Configura el Client ID de Google en las opciones de NexoMail.');
     const state=crypto.randomUUID(),redirect=chrome.identity.getRedirectURL('google');
     const params={client_id:clientId,redirect_uri:redirect,response_type:'token',scope:SCOPES.join(' '),state,prompt:interactive?'select_account consent':'none'};
     if(email)params.login_hint=email;

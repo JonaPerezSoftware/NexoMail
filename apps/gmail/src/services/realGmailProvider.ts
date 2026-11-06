@@ -1,6 +1,8 @@
 import { analyzeMail, inspectHtml } from '@shared/mail/mail-insights';
-import type { Email , MailFile} from '../types/email';
+import type { Email , MailFile, MailAttachment} from '../types/email';
+import { base64ToBlob } from './mailFiles';
 import { MANUAL_CATEGORIES } from '../types/email';
+import { cleanMessageBody } from './mailIntent';
 
 import { MAX_ATTACHMENT_BYTES } from './platform';
 
@@ -17,9 +19,63 @@ export type GmailConfig = {
 
 const GMAIL_CONFIG_KEY = 'emailagent.extension.gmail.session';
 
+/**
+ * Gmail measures each account's usage over a moving one-second window (about 250 units) and per
+ * minute. Requests are paced below both, so a large first load spreads over a few seconds instead
+ * of being refused. Costs follow Gmail's quota table.
+ */
+const UNITS_PER_SECOND = 180;
+const UNITS_PER_MINUTE = 12000;
+function gmailCost(url: string, method: string): number {
+  if (/\/messages\/send/.test(url)) return 100;
+  if (/\/labels(?:\?|$)/.test(url)) return method === 'GET' ? 1 : 5;
+  return 5;
+}
+class GmailPacer {
+  private spent: { at: number; units: number }[] = [];
+  async take(units: number): Promise<void> {
+    for (;;) {
+      const now = Date.now();
+      this.spent = this.spent.filter((entry) => now - entry.at < 60_000);
+      const lastSecond = this.spent.filter((entry) => now - entry.at < 1000).reduce((sum, entry) => sum + entry.units, 0);
+      const lastMinute = this.spent.reduce((sum, entry) => sum + entry.units, 0);
+      if (lastSecond + units <= UNITS_PER_SECOND && lastMinute + units <= UNITS_PER_MINUTE) { this.spent.push({ at: now, units }); return; }
+      // Wait until enough of the window has passed.
+      const wait = lastMinute + units > UNITS_PER_MINUTE ? 1000 : 120;
+      await new Promise((resolve) => setTimeout(resolve, wait));
+    }
+  }
+  /** Units used in the last minute, to show or log. */
+  usedLastMinute(): number { const now = Date.now(); return this.spent.filter((entry) => now - entry.at < 60_000).reduce((sum, entry) => sum + entry.units, 0); }
+}
+export const gmailPacer = new GmailPacer();
+
+/** Gmail answers 429, or 403 with one of these reasons, when the per-minute quota of the account is used up. */
+const LIMIT_REASON = /rateLimitExceeded|userRateLimitExceeded|quotaExceeded|Quota exceeded/i;
+export const GMAIL_LIMIT_MESSAGE = 'Gmail limitó temporalmente las peticiones de tu cuenta. Espera un minuto y vuelve a intentarlo; no se hizo ningún cambio.';
+/** A message already downloaded is reused for this long; changes made by NexoMail refresh it at once. */
+const DETAIL_TTL_MS = 10 * 60 * 1000;
+const DETAIL_CACHE_MAX = 600;
+
 export class RealGmailProvider {
   private config: GmailConfig | null = null;
   private isLiveMode: boolean = false;
+  private detailCache = new Map<string, { at: number; email: Email }>();
+  /** A message being downloaded is shared by loads that overlap (inbox refresh and the agent at once). */
+  private inflight = new Map<string, Promise<Email | null>>();
+  private cacheSession = '';
+  private cachedEmail(id: string): Email | null {
+    if (this.cacheSession !== this.getSessionKey()) { this.detailCache.clear(); this.cacheSession = this.getSessionKey(); }
+    const hit = this.detailCache.get(id);
+    return hit && Date.now() - hit.at < DETAIL_TTL_MS ? hit.email : null;
+  }
+  private remember(email: Email): void {
+    this.detailCache.delete(email.id);
+    this.detailCache.set(email.id, { at: Date.now(), email });
+    while (this.detailCache.size > DETAIL_CACHE_MAX) this.detailCache.delete(this.detailCache.keys().next().value!);
+  }
+  /** Messages NexoMail just changed are downloaded again next time, so their state is never stale. */
+  private forget(ids: string[]): void { for (const id of ids) this.detailCache.delete(id); }
 
   constructor() {
     this.loadSavedConfig();
@@ -68,9 +124,9 @@ export class RealGmailProvider {
   public getSessionKey(): string {return this.isConnected() ? 'gmail:'+(window.emailAgentHost.googleSessionId() || 'disconnected') : 'gmail:simulated';}
   public accountEmail(): string { return this.config?.email || ''; }
   /** Same steps the app used before: the Client ID comes from the extension options. */
-  public async connect(): Promise<void> {
+  public async connect(override?: string): Promise<void> {
     await window.emailAgentHost.ready;
-    const clientId=window.emailAgentHost.config.googleClientId?.trim();
+    const clientId=(override || window.emailAgentHost.config.googleClientId)?.trim();
     if(!clientId){await window.emailAgentHost.openOptions();throw new Error('Falta configurar Google en las opciones de la extensión.');}
     const auth=await window.emailAgentHost.googleLogin(clientId);
     this.saveConfig({...auth,clientSecret:'',redirectUri:''});
@@ -107,15 +163,25 @@ export class RealGmailProvider {
       headers.set('Authorization','Bearer '+token);
       options={...options,headers};
     }
-    let response=await fetch(url,options);
+    // Every call waits its turn so the account stays under Gmail's per-second and per-minute limits.
+    const cost=gmailCost(url,options.method || 'GET');
+    const send=async(init:RequestInit)=>{await gmailPacer.take(cost);return fetch(url,init);};
+    let response=await send(options);
     // Only reads are replayed, once. A write is never repeated automatically.
     if(response.status===401 && (!options.method || options.method==='GET') && session){
       await window.emailAgentHost.googleInvalidateToken((headers.get('Authorization') || '').replace(/^Bearer /,''));
       const token=await window.emailAgentHost.googleAccessToken(session);
       if(this.config?.sessionId!==session)throw new Error('La sesión cambió. Vuelve a seleccionar el correo.');
       headers.set('Authorization','Bearer '+token);
-      response=await fetch(url,{...options,headers});
+      response=await send({...options,headers});
     }
+    // Gmail limits requests per user; a read over the limit waits and tries again (twice at most).
+    const overLimit=async(res:Response)=>res.status===429 || (res.status===403 && LIMIT_REASON.test(await res.clone().text()));
+    for(let attempt=1;attempt<=2 && (!options.method || options.method==='GET') && await overLimit(response);attempt++){
+      await new Promise(resolve=>setTimeout(resolve,attempt*1200));
+      response=await send({...options,headers});
+    }
+    if(await overLimit(response))throw new Error(GMAIL_LIMIT_MESSAGE);
     return response;
   }
 
@@ -157,18 +223,29 @@ export class RealGmailProvider {
         return [];
       }
 
-      // 2. Fetch message details in parallel
-      const emails = await Promise.all(
-        listData.messages.map(async (item: { id: string }) => {
+      // 2. Details: listing costs 5 units, each message 5 more. Messages already downloaded are reused,
+      // so a refresh or "Cargar más" only downloads the new ones, 10 at a time.
+      const detail = async (item: { id: string }) => {
+          const known = this.cachedEmail(item.id);
+          if (known) return known;
+          const pending = this.inflight.get(item.id);
+          if (pending) return pending;
+          const download = (async () => {
           const msgUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${item.id}?format=full`;
           const msgRes = await this.gmailRequest(msgUrl, {
             headers: { Authorization: `Bearer ${token}` },
           });
           if (!msgRes.ok) return null;
           const msg = await msgRes.json();
-          return this.parseGmailMessage(msg,labelNames);
-        })
-      );
+          const email = this.parseGmailMessage(msg,labelNames);
+          this.remember(email);
+          return email;
+          })();
+          this.inflight.set(item.id, download);
+          try { return await download; } finally { this.inflight.delete(item.id); }
+      };
+      const emails: (Email | null)[] = [];
+      for (let i = 0; i < listData.messages.length; i += 10) emails.push(...await Promise.all(listData.messages.slice(i, i + 10).map(detail)));
 
       return emails.filter((e): e is Email => e !== null);
     } catch (err: any) {
@@ -197,10 +274,15 @@ export class RealGmailProvider {
 
     // Walk nested MIME alternatives, retaining hidden HTML destinations for analysis.
     const texts:string[]=[],htmls:string[]=[],filenames:string[]=[];
+    const attachments:MailAttachment[]=[];
     let count=0,partial=false,remaining=500000;
     const walk=(part:any,depth=0):void=>{
       if(!part || depth>12 || ++count>80){partial=true;return;}
-      if(part.filename){filenames.push(String(part.filename));return;}
+      if(part.filename){
+        filenames.push(String(part.filename));
+        attachments.push({id:String(part.body?.attachmentId || `part-${count}`),name:String(part.filename),type:String(part.mimeType || 'application/octet-stream'),size:Number(part.body?.size) || 0,data:part.body?.attachmentId?undefined:part.body?.data});
+        return;
+      }
       if(part.body?.data && ['text/plain','text/html'].includes(part.mimeType)){
         const encoded=String(part.body.data);
         if(encoded.length>800000){partial=true;return;}
@@ -240,16 +322,19 @@ export class RealGmailProvider {
       priority: isUrgent ? 'urgent' : 'normal',
       labels: msg.labelIds || [],
       manualCategories: (msg.labelIds || []).map((id:string)=>labelNames.get(id)).filter((name:string|undefined):name is string=>!!name && (MANUAL_CATEGORIES as readonly string[]).includes(name)),
-      trashed: (msg.labelIds || []).includes('TRASH')
+      trashed: (msg.labelIds || []).includes('TRASH'),
+      attachments,
+      hasAttachments: attachments.length > 0
     };
   }
 
   // Real Gmail API call to Trash emails
   public async trashEmails(ids: string[]): Promise<void> {
+    this.forget(ids);
     if (!this.config?.sessionId) throw new Error('Sesión no autorizada');
 
     const token=await this.accessToken(),session=this.getSessionKey();
-    for (const id of ids) {
+    await this.eachMessage(ids, 'mover', async (id) => {
       if(session!==this.getSessionKey())throw new Error('La sesión cambió. Se detuvo el resto de la operación.');
       const url = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}/trash`;
       const res = await this.gmailRequest(url, {
@@ -259,20 +344,37 @@ export class RealGmailProvider {
       if (!res.ok) {
         throw new Error('Gmail no confirmó el movimiento a la papelera. Revisa el buzón antes de crear otra propuesta.');
       }
+    });
+  }
+
+  /** Runs a change message by message; if Gmail's limit stops it halfway, says how many were already done. */
+  private async eachMessage(ids: string[], verb: string, step: (id: string) => Promise<void>): Promise<void> {
+    let done = 0;
+    for (const id of ids) {
+      try { await step(id); }
+      catch (error) {
+        if (done > 0 && (error as Error).message === GMAIL_LIMIT_MESSAGE) {
+          throw new Error(`Gmail limitó temporalmente las peticiones después de ${verb} ${done} de ${ids.length} correos. Espera un minuto y vuelve a aprobarla: los ya procesados no cambian.`);
+        }
+        throw error;
+      }
+      done++;
     }
   }
 
   public async untrashEmails(ids: string[]): Promise<void> {
+    this.forget(ids);
     if (!this.config?.sessionId) throw new Error('Sesión no autorizada');
     const token=await this.accessToken(),session=this.getSessionKey();
-    for (const id of ids) {
+    await this.eachMessage(ids, 'recuperar', async (id) => {
       if(session!==this.getSessionKey())throw new Error('La sesión cambió. Se detuvo el resto de la operación.');
       const res = await this.gmailRequest(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(id)}/untrash`, {method: 'POST',headers: { Authorization: `Bearer ${token}` }});
       if (!res.ok) throw new Error('Gmail no confirmó la recuperación. Revisa la papelera antes de volver a intentarlo.');
-    }
+    });
   }
 
   public async removeLabel(ids: string[], labelName: string): Promise<void> {
+    this.forget(ids);
     if (!this.config?.sessionId) throw new Error('Sesión no autorizada');
     const token=await this.accessToken();
     const names=await this.userLabelNames(token);
@@ -287,6 +389,7 @@ export class RealGmailProvider {
   // Real Gmail API call to Send email
   public async sendEmail(recipient: string, subject: string, body: string, attachments: MailFile[] = []): Promise<void> {
     if (!this.config?.sessionId) throw new Error('Sesión no autorizada');
+    body = cleanMessageBody(body);
     if (attachments.length) return this.sendWithAttachments(recipient, subject, body, attachments);
 
     const token=await this.accessToken();
@@ -339,6 +442,7 @@ export class RealGmailProvider {
   }
 
   public async labelEmails(ids: string[], labelName: string): Promise<void> {
+    this.forget(ids);
     if (!this.config?.sessionId) throw new Error('Sesión no autorizada');
 
     const token=await this.accessToken(),session=this.getSessionKey();
@@ -395,7 +499,22 @@ export class RealGmailProvider {
   }
 
   // Real Gmail API call to Mark as Read
+  public async listAttachments(email: Email): Promise<MailAttachment[]> { return email.attachments ?? []; }
+
+  /** Downloads one attachment, only when the person asks to view or save it (5 quota units). */
+  public async downloadAttachment(email: Email, attachment: MailAttachment): Promise<Blob> {
+    let data = attachment.data;
+    if (!data) {
+      const token = await this.accessToken();
+      const res = await this.gmailRequest(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(email.id)}/attachments/${encodeURIComponent(attachment.id)}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) throw new Error('Gmail no entregó el adjunto. Vuelve a intentarlo.');
+      data = String((await res.json()).data ?? '');
+    }
+    return base64ToBlob(data, attachment.type);
+  }
+
   public async markAsRead(id: string): Promise<void> {
+    this.forget([id]);
     if (!this.config?.sessionId) return;
 
     const token=await this.accessToken();

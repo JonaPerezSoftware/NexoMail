@@ -1,33 +1,36 @@
 import { MANUAL_BODY_PLACEHOLDER } from '../services/mailIntent';
 import React, { useRef, useState } from 'react';
-import { Check, X, Mail, Trash2, Tag, Info, PenLine, ShieldCheck, Undo2, Paperclip, MessageSquare, FileText, Image as ImageIcon } from 'lucide-react';
+import { Check, X, Mail, Trash2, Tag, Info, PenLine, ShieldCheck, Undo2, Paperclip, MessageSquare, FileText, Image as ImageIcon, Loader2, History } from 'lucide-react';
 import type { ActionType, MailFile, PendingAction } from '../types/email';
 import { MAIL, PLATFORM, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_LABEL } from '../services/platform';
 
-const formatSize = (bytes: number) => bytes < 1048576 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1048576).toFixed(1)} MB`;
+import { formatSize, readMailFile } from '../services/mailFiles';
 
 interface PendingActionsListProps {
   pendingActions: PendingAction[];
-  onApprove: (action: PendingAction) => void;
+  onApprove: (action: PendingAction) => void | Promise<void>;
   onReject: (action: PendingAction) => void;
   onGoToChat?: () => void;
+  /** Called after the person edits a proposal or changes its selection, so it is saved. */
+  onChange?: () => void;
 }
 
 /** One visual language per kind of action: icon, label and the verb on the confirm button. */
-const KIND: Partial<Record<ActionType, { icon: typeof Mail; label: string; confirm: string; tone: 'send' | 'danger' | 'neutral' }>> = {
-  SEND_EMAIL: { icon: Mail, label: 'Enviar correo', confirm: 'Enviar', tone: 'send' },
-  DELETE_EMAIL: { icon: Trash2, label: 'Mover a la papelera', confirm: 'Mover a la papelera', tone: 'danger' },
-  BULK_CLEANUP: { icon: Trash2, label: 'Limpieza de correos', confirm: 'Mover a la papelera', tone: 'danger' },
-  LABEL_EMAIL: { icon: Tag, label: 'Aplicar etiqueta', confirm: 'Aplicar etiqueta', tone: 'neutral' },
-  RESTORE_EMAIL: { icon: Undo2, label: 'Recuperar de la papelera', confirm: 'Recuperar', tone: 'neutral' },
+const KIND: Partial<Record<ActionType, { icon: typeof Mail; label: string; confirm: string; working: string; tone: 'send' | 'danger' | 'neutral' }>> = {
+  SEND_EMAIL: { icon: Mail, label: 'Enviar correo', confirm: 'Enviar', working: 'Enviando…', tone: 'send' },
+  DELETE_EMAIL: { icon: Trash2, label: 'Mover a la papelera', confirm: 'Mover a la papelera', working: 'Moviendo a la papelera…', tone: 'danger' },
+  BULK_CLEANUP: { icon: Trash2, label: 'Limpieza de correos', confirm: 'Mover a la papelera', working: 'Moviendo a la papelera…', tone: 'danger' },
+  LABEL_EMAIL: { icon: Tag, label: 'Aplicar etiqueta', confirm: 'Aplicar etiqueta', working: 'Etiquetando…', tone: 'neutral' },
+  RESTORE_EMAIL: { icon: Undo2, label: 'Recuperar de la papelera', confirm: 'Recuperar', working: 'Recuperando…', tone: 'neutral' },
 };
-const FALLBACK_KIND = { icon: Info, label: 'Acción propuesta', confirm: 'Aprobar', tone: 'neutral' as const };
+const FALLBACK_KIND = { icon: Info, label: 'Acción propuesta', confirm: 'Aprobar', working: 'Aplicando…', tone: 'neutral' as const };
 
 export const PendingActionsList: React.FC<PendingActionsListProps> = ({
   pendingActions,
   onApprove,
   onReject,
-  onGoToChat
+  onGoToChat,
+  onChange
 }) => {
   const [editingActionId, setEditingActionId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<{ recipient: string; subject: string; body: string; files: MailFile[] }>({
@@ -37,21 +40,35 @@ export const PendingActionsList: React.FC<PendingActionsListProps> = ({
     files: []
   });
   const [fileError, setFileError] = useState('');
+  // Ticking a message changes the proposal in place; this only asks React to redraw.
+  const [, redrawState] = useState(0);
+  const redraw = (update: (n: number) => number) => { redrawState(update); onChange?.(); };
+  /** The proposal being executed: its buttons stay disabled and show what is happening. */
+  const [working, setWorking] = useState<string | null>(null);
+  const approve = async (action: PendingAction) => {
+    if (working) return;
+    setWorking(action.id);
+    try { await onApprove(action); } finally { setWorking(null); }
+  };
+  const toggleEmail = (action: PendingAction, id: string) => {
+    const selected = new Set(action.payload.emailIds ?? []);
+    if (selected.has(id)) selected.delete(id); else selected.add(id);
+    action.payload.emailIds = (action.payload.emailOptions ?? []).map((option) => option.id).filter((optionId) => selected.has(optionId));
+    redraw((n) => n + 1);
+  };
+  const setAllEmails = (action: PendingAction, all: boolean) => {
+    action.payload.emailIds = all ? (action.payload.emailOptions ?? []).map((option) => option.id) : [];
+    redraw((n) => n + 1);
+  };
   const fileInput = useRef<HTMLInputElement>(null);
 
   /** Same limits as the chat and the compose dialog; files stay in memory until the send is approved. */
   const addFiles = async (list: FileList | null) => {
     setFileError('');
     const picked = [...(list ?? [])];
-    const total = editForm.files.reduce((sum, file) => sum + file.size, 0) + picked.reduce((sum, file) => sum + file.size, 0);
-    if (total > MAX_ATTACHMENT_BYTES) { setFileError(`Los adjuntos superan ${MAX_ATTACHMENT_LABEL} en total.`); if (fileInput.current) fileInput.current.value = ''; return; }
     try {
-      const read = await Promise.all(picked.map(file => new Promise<MailFile>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onerror = () => reject(new Error(file.name));
-        reader.onload = () => resolve({ name: file.name, type: file.type || 'application/octet-stream', size: file.size, data: String(reader.result).split(',')[1] ?? '' });
-        reader.readAsDataURL(file);
-      })));
+      const read = await Promise.all(picked.map(readMailFile));
+      if (editForm.files.reduce((sum, file) => sum + file.size, 0) + read.reduce((sum, file) => sum + file.size, 0) > MAX_ATTACHMENT_BYTES) { setFileError(`Los adjuntos superan ${MAX_ATTACHMENT_LABEL} en total.`); return; }
       setEditForm(prev => ({ ...prev, files: [...prev.files, ...read] }));
     } catch (error) { setFileError(`No se pudo leer ${error instanceof Error ? error.message : 'el archivo'}.`); }
     finally { if (fileInput.current) fileInput.current.value = ''; }
@@ -86,7 +103,9 @@ export const PendingActionsList: React.FC<PendingActionsListProps> = ({
     action.payload.attachments = editForm.files.length ? editForm.files : undefined;
     action.title = `Enviar correo a ${editForm.recipient || 'Destinatario'}`;
     action.description = `Asunto: "${editForm.subject}"`;
+    action.payload.omittedAttachments = undefined;
     setEditingActionId(null);
+    onChange?.();
   };
 
   return (
@@ -98,7 +117,10 @@ export const PendingActionsList: React.FC<PendingActionsListProps> = ({
         const isSend = action.actionType === 'SEND_EMAIL';
         const needsBody = Boolean(action.payload.body?.includes(MANUAL_BODY_PLACEHOLDER));
         const count = action.payload.emailIds?.length ?? 0;
-        const headline = isSend ? action.payload.recipient || 'Sin destinatario' : action.title;
+        const options = action.payload.emailOptions ?? [];
+        const pickable = options.length > 1;
+        const noneSelected = pickable && count === 0;
+        const headline = isSend ? action.payload.recipient || 'Sin destinatario' : (action.payload.emailOptions?.length ?? 0) > 1 ? `${action.payload.emailIds?.length ?? 0} de ${action.payload.emailOptions?.length} correos` : action.title;
         const fieldId = (name: string) => `pa-${action.id}-${name}`;
         const note = needsBody
           ? 'Escribe el mensaje con «Editar» antes de enviarlo.'
@@ -112,8 +134,13 @@ export const PendingActionsList: React.FC<PendingActionsListProps> = ({
                 ? `Volverá a tu bandeja de entrada de ${MAIL}.`
                 : action.aiExplanation;
 
+        const busy = working === action.id;
+        const restoredNote = action.restored
+          ? `Recuperada después de recargar. Revisa que siga siendo correcta antes de aprobarla.${action.payload.omittedAttachments?.length ? ` Tenía ${action.payload.omittedAttachments.length === 1 ? 'un adjunto' : action.payload.omittedAttachments.length + ' adjuntos'} (${action.payload.omittedAttachments.join(', ')}) que no se guardan: vuelve a adjuntarlos con «Editar».` : ''}`
+          : '';
+
         return (
-          <article key={action.id} className={`pa-card pa-${kind.tone}`} aria-label={`${kind.label}: ${headline}`}>
+          <article key={action.id} className={`pa-card pa-${kind.tone}`} aria-busy={busy} aria-label={`${kind.label}: ${headline}`}>
             <header className="pa-head">
               <span className="pa-icon" aria-hidden="true"><Icon /></span>
               <div className="pa-heading">
@@ -153,7 +180,7 @@ export const PendingActionsList: React.FC<PendingActionsListProps> = ({
                     {editForm.files.map((file, index) => (
                       <li key={index}>
                         {file.type.startsWith('image/') ? <ImageIcon aria-hidden="true" /> : <FileText aria-hidden="true" />}
-                        <span>{file.name}</span><small>{formatSize(file.size)}</small>
+                        <span>{file.name}</span><small>{file.originalSize ? <span title="Foto reducida para enviarla más rápido">{formatSize(file.originalSize)} → {formatSize(file.size)}</span> : formatSize(file.size)}</small>
                         <button type="button" className="cm-remove" onClick={() => setEditForm(prev => ({ ...prev, files: prev.files.filter((_, i) => i !== index) }))} aria-label={`Quitar ${file.name}`}><X aria-hidden="true" /></button>
                       </li>
                     ))}
@@ -167,29 +194,59 @@ export const PendingActionsList: React.FC<PendingActionsListProps> = ({
                   {isSend && action.payload.subject && (
                     <div><dt>Asunto</dt><dd>{action.payload.subject}</dd></div>
                   )}
-                  {!isSend && action.description && (
+                  {!isSend && !pickable && action.description && (
                     <div><dt>{count > 1 ? 'Correos' : 'Correo'}</dt><dd>{action.description}</dd></div>
                   )}
-                  {!isSend && count > 1 && (
+                  {!isSend && count > 1 && !pickable && (
                     <div><dt>Total</dt><dd>{count} correos</dd></div>
                   )}
                   {action.actionType === 'LABEL_EMAIL' && action.payload.label && (
                     <div><dt>Etiqueta</dt><dd>{action.payload.label}</dd></div>
                   )}
                 </dl>
+                {pickable && (
+                  <fieldset className="pa-picks">
+                    <legend>
+                      <span>{count} de {options.length} correos seleccionados</span>
+                      <span className="pa-picks-all">
+                        <button type="button" onClick={() => setAllEmails(action, true)} disabled={busy || count === options.length}>Todos</button>
+                        <button type="button" onClick={() => setAllEmails(action, false)} disabled={busy || count === 0}>Ninguno</button>
+                      </span>
+                    </legend>
+                    <ul>
+                      {options.map((option) => {
+                        const checked = action.payload.emailIds?.includes(option.id) ?? false;
+                        return (
+                          <li key={option.id}>
+                            <label className={checked ? '' : 'pa-pick-off'}>
+                              <input type="checkbox" checked={checked} disabled={busy} onChange={() => toggleEmail(action, option.id)} />
+                              <span className="pa-pick-text"><strong>{option.subject}</strong><small>{option.sender}{option.date ? ` · ${option.date}` : ''}</small></span>
+                            </label>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </fieldset>
+                )}
                 {isSend && action.payload.body && (
                   <div className="pa-message">{action.payload.body}</div>
                 )}
                 {isSend && !!action.payload.attachments?.length && (
                   <ul className="pa-files" aria-label="Adjuntos">
                     {action.payload.attachments.map((file, index) => (
-                      <li key={index}><Paperclip aria-hidden="true" /><span>{file.name}</span><small>{formatSize(file.size)}</small></li>
+                      <li key={index}><Paperclip aria-hidden="true" /><span>{file.name}</span><small>{file.originalSize ? <span title="Foto reducida para enviarla más rápido">{formatSize(file.originalSize)} → {formatSize(file.size)}</span> : formatSize(file.size)}</small></li>
                     ))}
                   </ul>
                 )}
               </>
             )}
 
+            {restoredNote && (
+              <p className="pa-note pa-note-restored">
+                <History aria-hidden="true" />
+                <span>{restoredNote}</span>
+              </p>
+            )}
             <p className="pa-note">
               <Info aria-hidden="true" />
               <span>{note}</span>
@@ -214,7 +271,7 @@ export const PendingActionsList: React.FC<PendingActionsListProps> = ({
               ) : (
                 <>
                   {isSend && (
-                    <button type="button" key="edit" className="pa-btn pa-btn-ghost pa-edit" onClick={() => handleStartEdit(action)}>
+                    <button type="button" key="edit" className="pa-btn pa-btn-ghost pa-edit" disabled={busy} onClick={() => handleStartEdit(action)}>
                       <PenLine aria-hidden="true" />
                       Editar
                     </button>
@@ -223,6 +280,7 @@ export const PendingActionsList: React.FC<PendingActionsListProps> = ({
                     type="button"
                     key="reject"
                     className="pa-btn pa-btn-secondary"
+                    disabled={busy}
                     onClick={() => onReject(action)}
                     title="Descartar esta propuesta sin ejecutarla"
                   >
@@ -233,12 +291,13 @@ export const PendingActionsList: React.FC<PendingActionsListProps> = ({
                     type="button"
                     key="approve"
                     className={`pa-btn ${kind.tone === 'danger' ? 'pa-btn-danger' : 'pa-btn-primary'}`}
-                    onClick={() => onApprove(action)}
-                    disabled={needsBody}
-                    title={needsBody ? 'Edita el borrador y escribe el mensaje antes de aprobar' : `Aprobar esta propuesta y ejecutarla en ${MAIL}`}
+                    onClick={() => void approve(action)}
+                    disabled={busy || needsBody || noneSelected}
+                    aria-busy={busy}
+                    title={needsBody ? 'Edita el borrador y escribe el mensaje antes de aprobar' : noneSelected ? 'Selecciona al menos un correo' : `Aprobar esta propuesta y ejecutarla en ${MAIL}`}
                   >
-                    <Check aria-hidden="true" />
-                    {kind.confirm}
+                    {busy ? <Loader2 aria-hidden="true" className="spin" /> : <Check aria-hidden="true" />}
+                    {busy ? kind.working : <>{kind.confirm}{pickable ? ` (${count})` : ''}</>}
                   </button>
                 </>
               )}

@@ -3,9 +3,10 @@ import { LayoutDashboard, Settings, Mail, ShieldCheck, History, AlertTriangle, S
 import type { Email } from '../types/email';
 import { fetchLlmHealth, type LlmHealth } from '../services/llmClient';
 import { mailProvider } from '../services/mailProvider';
-import { openPrivacyPolicy } from './PrivacyConsent';
-import { MAIL, ACCOUNT, PLATFORM } from '../services/platform';
-interface Props {view:'summary'|'settings';emails:Email[];pendingCount:number;logCount:number;theme:'dark'|'light';strictMode:boolean;onToggleTheme:()=>void;onToggleStrictMode:()=>void;onAuthorize:()=>void;connected:boolean;storageStatus:string;storageReady:boolean;onEraseStorage:()=>void}
+import { consentHistory, openPrivacyPolicy } from './PrivacyConsent';
+import { BusyButton } from './BusyButton';
+import { MAIL, ACCOUNT, PLATFORM, MAIL_COUNT_OPTIONS } from '../services/platform';
+interface Props {view:'summary'|'settings';emails:Email[];pendingCount:number;logCount:number;theme:'dark'|'light';strictMode:boolean;onToggleTheme:()=>void;onToggleStrictMode:()=>void;onAuthorize:()=>void|Promise<void>;authorizing?:boolean;connected:boolean;mailCount:number;onMailCount:(value:number)=>void;storageStatus:string;storageReady:boolean;onEraseStorage:()=>void|Promise<void>}
 /** Microsoft only accepts sign-ins that return to an address registered as a single-page application. */
 function MicrosoftRedirect(){
   const [status,setStatus]=useState('');
@@ -17,6 +18,7 @@ function MicrosoftRedirect(){
   </div>;
 }
 export function WorkspacePages(p:Props){
+  const lastConsent=consentHistory().find(record=>record.provider===MAIL);
   const [health,setHealth]=useState<LlmHealth|null>(null);
   const [loading,setLoading]=useState(false);
   useEffect(()=>{let active=true;if(p.view==='settings'){setLoading(true);fetchLlmHealth().then(value=>{if(active){setHealth(value);setLoading(false);}});}return()=>{active=false;};},[p.view]);
@@ -26,10 +28,11 @@ export function WorkspacePages(p:Props){
     </div><article className="workspace-card"><h3>Tu espacio de trabajo</h3><p>Consulta tus mensajes en la bandeja, prepara respuestas con el agente y revisa sus propuestas en Acciones pendientes.</p><p className="workspace-muted">Estos indicadores corresponden a los mensajes cargados. No representan todo tu buzón.</p></article></div></section>;
   return <section className="workspace-page workspace-scroll page-narrow"><div className="workspace-section-heading"><Settings size={21}/><h2>Ajustes</h2></div><p className="pa-intro">Tu cuenta, cómo trabaja el asistente y los datos que guarda.</p><div className="st-list">
     <section className="st-group" aria-labelledby="st-account"><h3 id="st-account">Cuenta de {MAIL}</h3>
-      <div className="st-row"><span className="st-icon" aria-hidden="true"><Mail/></span><div className="st-text"><strong>{p.connected?(mailProvider.accountEmail() || 'Cuenta autorizada'):'Sin conectar'}</strong><small>{p.connected?'NexoMail lee y gestiona este buzón con tu aprobación.':'Autoriza tu cuenta para trabajar con tus correos reales.'}</small></div><button type="button" className="pa-btn pa-btn-secondary" onClick={p.onAuthorize}>{p.connected?'Gestionar':'Conectar'}</button></div>
+      <div className="st-row"><span className="st-icon" aria-hidden="true"><Mail/></span><div className="st-text"><strong>{p.connected?(mailProvider.accountEmail() || 'Cuenta autorizada'):'Sin conectar'}</strong><small>{p.connected?'NexoMail lee y gestiona este buzón con tu aprobación.':'Autoriza tu cuenta para trabajar con tus correos reales.'}</small></div><BusyButton className="pa-btn pa-btn-secondary" busy={p.authorizing} busyLabel="Conectando…" onClick={p.onAuthorize}>{p.connected?'Gestionar':'Conectar'}</BusyButton></div>
       {PLATFORM==='outlook' && <MicrosoftRedirect/>}
     </section>
     <section className="st-group" aria-labelledby="st-prefs"><h3 id="st-prefs">Preferencias</h3>
+      <div className="st-row"><div className="st-text"><strong>Correos que se cargan</strong><small>Los más recientes de cada carpeta. El asistente analiza los mismos. Más correos tardan un poco más en cargar; en Correo puedes pulsar «Cargar más».</small></div><div className="st-segmented" role="group" aria-label="Correos que se cargan">{MAIL_COUNT_OPTIONS.map(value=><button key={value} type="button" aria-pressed={p.mailCount===value} onClick={()=>{if(p.mailCount!==value)p.onMailCount(value);}}>{value}</button>)}</div></div>
       <div className="st-row"><div className="st-text"><strong>Apariencia</strong><small>Se aplica al panel y a la pantalla completa.</small></div><div className="st-segmented" role="group" aria-label="Apariencia">{(['light','dark'] as const).map(value=><button key={value} type="button" aria-pressed={p.theme===value} onClick={()=>{if(p.theme!==value)p.onToggleTheme();}}>{value==='light'?<Sun aria-hidden="true"/>:<Moon aria-hidden="true"/>}{value==='light'?'Claro':'Oscuro'}</button>)}</div></div>
       <label className="st-row st-clickable"><div className="st-text"><strong>Revisión estricta</strong><small>También pide aprobación para etiquetar correos.</small></div><input type="checkbox" role="switch" className="st-switch" checked={p.strictMode} onChange={p.onToggleStrictMode}/></label>
       <div className="st-row st-info"><span className="st-icon" aria-hidden="true"><ShieldCheck/></span><div className="st-text"><small>Enviar correos y moverlos a la papelera siempre requieren tu aprobación, con o sin revisión estricta.</small></div></div>
@@ -39,10 +42,10 @@ export function WorkspacePages(p:Props){
       <div className="st-row st-actions"><small>Consultar el estado no genera ninguna respuesta de IA. La conexión se comparte con {PLATFORM==='outlook'?'Gmail':'Outlook'}.</small><div><button type="button" className="pa-btn pa-btn-ghost" disabled={loading} onClick={refresh}><RefreshCw aria-hidden="true"/>{loading?'Actualizando…':'Actualizar'}</button><button type="button" className="pa-btn pa-btn-secondary" onClick={()=>window.emailAgentHost.openOptions()}>Opciones de la extensión</button></div></div>
     </section>
     <section className="st-group" aria-labelledby="st-data"><h3 id="st-data">Datos guardados</h3>
-      <div className="st-row"><span className="st-icon" aria-hidden="true"><Database/></span><div className="st-text"><strong>{p.storageStatus}</strong><small>El chat, los borradores y el historial pueden contener datos personales. Revisa el estado antes de cerrar.</small></div>{p.storageReady && <button type="button" className="pa-btn pa-btn-danger-ghost" onClick={p.onEraseStorage}>Vaciar datos</button>}</div>
+      <div className="st-row"><span className="st-icon" aria-hidden="true"><Database/></span><div className="st-text"><strong>{p.storageStatus}</strong><small>El chat, los borradores y el historial pueden contener datos personales. Revisa el estado antes de cerrar.</small></div>{p.storageReady && <BusyButton className="pa-btn pa-btn-danger-ghost" busyLabel="Vaciando…" onClick={p.onEraseStorage}>Vaciar datos</BusyButton>}</div>
     </section>
     <section className="st-group" aria-labelledby="st-privacy"><h3 id="st-privacy">Privacidad y permisos</h3>
-      <div className="st-row"><span className="st-icon" aria-hidden="true"><Lock/></span><div className="st-text"><strong>Política de privacidad</strong><small>Qué datos se leen, dónde se guardan y con quién se comparten.</small></div><button type="button" className="pa-btn pa-btn-secondary" onClick={openPrivacyPolicy}>Leer</button></div>
+      <div className="st-row"><span className="st-icon" aria-hidden="true"><Lock/></span><div className="st-text"><strong>Política de privacidad</strong><small>Qué datos se leen, dónde se guardan y con quién se comparten. Se acepta cada vez que conectas una cuenta.{lastConsent?` Última aceptación: ${new Date(lastConsent.acceptedAt).toLocaleString('es-ES',{dateStyle:'medium',timeStyle:'short'})}${lastConsent.email?` · ${lastConsent.email}`:''} (versión ${lastConsent.version}).`:''}</small></div><button type="button" className="pa-btn pa-btn-secondary" onClick={openPrivacyPolicy}>Leer</button></div>
       <div className="st-row"><span className="st-icon" aria-hidden="true"><KeyRound/></span><div className="st-text"><strong>Permisos concedidos a {ACCOUNT}</strong><small>Leer, etiquetar, mover a la papelera y recuperar correos; enviar los que apruebes. No puede borrar de forma definitiva.</small></div><a className="pa-btn pa-btn-secondary" href={PLATFORM==='outlook'?'https://account.live.com/consent/Manage':'https://myaccount.google.com/connections'} target="_blank" rel="noopener noreferrer">Revisar o retirar<ExternalLink aria-hidden="true"/></a></div>
       <div className="st-row st-info"><span className="st-icon" aria-hidden="true"><ShieldCheck/></span><div className="st-text"><small>Los adjuntos del chat solo salen en el correo que apruebes, y la IA ve únicamente sus nombres.</small></div></div>
     </section>

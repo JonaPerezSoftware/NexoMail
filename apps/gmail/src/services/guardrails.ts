@@ -122,7 +122,7 @@ export class GuardrailsService {
       impactScore: policy.impactScore,
       payload: {...payload,isReal:payload.isReal ?? mailProvider.isConnected(),sessionKey:payload.sessionKey ?? mailProvider.getSessionKey()},
       status: 'PENDING',
-      createdAt: new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
+      createdAt: new Date().toISOString(),
       aiExplanation: customExplanation || policy.explanationPattern
     };
   }

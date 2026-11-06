@@ -377,3 +377,97 @@ select option,select optgroup{background-color:var(--bg-surface);color:var(--tex
 .hx-range input{height:38px;padding:0 10px;border:1px solid var(--border-default);border-radius:9px;background:var(--bg-surface);color:var(--text-primary);font:inherit;font-size:13.5px}
 .hx-range input:focus{outline:2px solid var(--border-focus);outline-offset:-1px}
 @media(max-width:560px){.hx-date{flex:1 1 100%}.hx-date select{flex:1}}
+
+/* Acciones: choose which messages a multi-message proposal includes */
+.pa-picks{margin:0;padding:0;border:1px solid var(--border-default);border-radius:10px;overflow:hidden;min-width:0}
+.pa-picks legend{display:flex;align-items:center;justify-content:space-between;gap:10px;float:left;width:100%;padding:9px 12px;background:var(--bg-panel);border-bottom:1px solid var(--border-subtle);font-size:13px;font-weight:600;color:var(--text-secondary)}
+.pa-picks legend+*{clear:both}
+.pa-picks-all{display:inline-flex;gap:4px}
+.pa-picks-all button{height:28px;padding:0 10px;border:0;border-radius:7px;background:transparent;color:var(--accent-primary-text);font:inherit;font-size:12.5px;font-weight:600;cursor:pointer}
+.pa-picks-all button:hover:not(:disabled){background:var(--accent-primary-subtle)}
+.pa-picks-all button:disabled{color:var(--text-secondary);opacity:.55;cursor:default}
+.pa-picks ul{list-style:none;margin:0;padding:4px;max-height:280px;overflow:auto}
+.pa-picks label{display:flex;align-items:flex-start;gap:10px;padding:8px;border-radius:8px;cursor:pointer}
+.pa-picks label:hover{background:var(--bg-panel)}
+.pa-picks input{width:16px;height:16px;margin:2px 0 0;flex-shrink:0;accent-color:var(--accent-primary);cursor:pointer}
+.pa-pick-text{display:flex;flex-direction:column;min-width:0}
+.pa-pick-text strong{font-size:13.5px;font-weight:550;color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pa-pick-text small{font-size:12.5px;color:var(--text-secondary)}
+.pa-pick-off .pa-pick-text strong{color:var(--text-secondary);text-decoration:line-through}
+
+/* Correo: load older messages */
+.mx-more{display:flex;flex-direction:column;align-items:center;gap:6px;padding:16px 12px 20px}
+.mx-more small{color:var(--text-secondary);font-size:12.5px;text-align:center}
+
+/* Chat: structured answers (headings, lists, secondary lines) */
+.message-text.md{display:flex;flex-direction:column;gap:10px}
+.message-text.md p{margin:0}
+.message-text.md .md-heading{font-weight:650;font-size:1.04em;color:var(--text-primary);letter-spacing:-.1px}
+.message-text.md .md-heading+p{margin-top:-6px;color:var(--text-secondary)}
+.message-text.md ul,.message-text.md ol{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:8px}
+.message-text.md li{padding-left:2px}
+.message-text.md li::marker{color:var(--text-secondary)}
+.message-text.md li>span{display:block}
+.message-text.md .md-sub{font-size:.9em;line-height:1.45;color:var(--text-secondary);margin-top:1px}
+.message-text.md code{font:.88em ui-monospace,Consolas,monospace;padding:1px 5px;border-radius:5px;background:var(--bg-panel);border:1px solid var(--border-subtle)}
+.chat-bubble-wrapper.user .message-text.md{gap:4px}
+
+/* Acciones: restored proposal and work in progress */
+.pa-note-restored{color:var(--accent-primary-text)}
+.pa-card[aria-busy="true"]{opacity:.92}
+.pa-card[aria-busy="true"] .pa-picks,.pa-card[aria-busy="true"] .pa-message{opacity:.7}
+
+.mx-busy{display:inline-flex;align-items:center;gap:5px;margin-left:6px;color:var(--text-secondary);font-size:12.5px}
+.mx-busy svg{width:14px;height:14px}
+.pa-btn[aria-busy="true"]{cursor:progress}
+
+/* Vertical settings rows: the narrow-screen flex-basis must not become a 200 px height */
+.st-row.st-col{flex-wrap:nowrap;gap:10px}
+.st-row.st-col>.st-text{flex:0 0 auto}
+.st-row.st-col .st-inline .pa-btn{margin-left:0}
+
+/* Correo: attachments of the open message */
+.att-box{display:flex;flex-direction:column;gap:10px;margin:0 0 16px;padding:14px 16px;border:1px solid var(--border-default);border-radius:12px;background:var(--bg-surface);color:var(--text-secondary);font-size:13.5px}
+div.att-box{flex-direction:row;align-items:center;gap:8px}
+.att-box svg{width:16px;height:16px;flex-shrink:0}
+.att-title{display:flex;align-items:center;gap:7px;margin:0;font-size:13.5px;font-weight:650;color:var(--text-primary)}
+.att-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.att-item{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--border-subtle);border-radius:10px;background:var(--bg-panel)}
+.att-icon{display:grid;place-items:center;width:32px;height:32px;flex-shrink:0;border-radius:8px;background:var(--bg-surface);color:var(--text-secondary)}
+.att-danger .att-icon{color:var(--pa-danger)}
+.att-text{display:flex;flex-direction:column;min-width:0;flex:1}
+.att-text strong{font-size:13.5px;font-weight:600;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.att-text small{font-size:12.5px;color:var(--text-secondary)}
+.att-danger .att-text small{color:var(--pa-danger)}
+.att-btn{height:32px;padding:0 10px;font-size:13px;flex-shrink:0}
+.att-note{margin:0;font-size:12.5px}
+.att-error{margin:0;color:var(--pa-danger);font-size:13px}
+.att-viewer{position:fixed;inset:0;z-index:60;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:16px;background:rgba(8,15,26,.82)}
+.att-viewer-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;width:min(100%,1100px);color:#fff}
+.att-viewer-bar strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.att-viewer-bar .cm-close{color:#fff}
+.att-viewer img{max-width:min(100%,1100px);max-height:calc(100vh - 90px);object-fit:contain;border-radius:8px;background:#fff;image-rendering:auto}
+@media(max-width:520px){.att-item{flex-wrap:wrap}.att-text{flex-basis:calc(100% - 42px)}.att-btn{flex:1}}
+
+.pc-note{margin:0;font-size:12.5px;color:var(--text-secondary)}
+
+/* Correo: links of a message, each with what the local check found */
+.nexo-message-links summary{cursor:pointer;font-weight:600;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.lk-count{padding:1px 8px;border-radius:999px;background:color-mix(in srgb,var(--pa-danger) 14%,transparent);color:var(--pa-danger);font-size:12px;font-weight:600}
+.lk-list{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:6px}
+.nexo-message-links .lk-item button{display:flex;align-items:flex-start;gap:10px;width:100%;padding:9px 10px;border:1px solid var(--border-subtle);border-radius:9px;background:var(--bg-panel);color:var(--text-primary);font:inherit;text-align:left;cursor:pointer}
+.nexo-message-links .lk-item button:hover{border-color:var(--border-hover)}
+.lk-icon{display:grid;place-items:center;flex-shrink:0;width:26px;height:26px;border-radius:7px;background:var(--bg-surface);color:var(--text-secondary)}
+.lk-icon svg{width:15px;height:15px}
+.lk-text{display:flex;flex-direction:column;gap:2px;min-width:0}
+.lk-text strong{font-size:13.5px;font-weight:600;overflow-wrap:anywhere}
+.lk-text small{font-size:12.5px;line-height:1.45;color:var(--text-secondary);overflow-wrap:anywhere}
+.lk-url{opacity:.8}
+.lk-reason{color:var(--text-primary)!important}
+.lk-warn .lk-icon{color:#b26b00}
+.lk-danger button{border-color:color-mix(in srgb,var(--pa-danger) 45%,transparent)!important}
+.lk-danger .lk-icon{color:var(--pa-danger)}
+.lk-danger .lk-reason{color:var(--pa-danger)!important}
+:root[data-theme='dark'] .lk-warn .lk-icon{color:#f3c26b}
+
+.mx-reader .nexo-message-links .lk-item button,.nexo-message-links .lk-item button{height:auto;min-height:0;padding:9px 10px;align-items:flex-start;justify-content:flex-start;white-space:normal}

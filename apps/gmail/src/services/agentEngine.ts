@@ -1,4 +1,4 @@
-import { MAIL, ACCOUNT, MAIL_API } from './platform';
+import { MAIL, ACCOUNT, MAIL_API, INBOX_SCOPE } from './platform';
 import type { AgentStep, AuditLog, Email, PendingAction } from '../types/email';
 import type { ChatMessage } from '../types/llm';
 import { emailProvider } from './mockEmailProvider';
@@ -23,6 +23,7 @@ import {
   isBulkCleanupRequest,
   isSentMailRequest,
 } from './mailIntent';
+import { describeInsight, detectInsightRequest, latestFromPerson, wantsLatestFromPerson } from './inboxInsights';
 
 export interface AgentResponse {
   steps: AgentStep[];
@@ -32,7 +33,7 @@ export interface AgentResponse {
   usedLlm: boolean;
 }
 
-const SYSTEM_PROMPT = `Eres EmailAgent AI, un asistente experto en gestión de correo electrónico.
+const SYSTEM_PROMPT = `Eres NexoMail, un asistente experto en gestión de correo electrónico.
 Respondes en español, de forma clara y profesional.
 
 Reglas:
@@ -48,13 +49,37 @@ Reglas:
 - Si falta información, pregunta al usuario o usa search_emails / get_email_details.
 - Sé conciso en la respuesta final al usuario.`;
 
+/** Lets the person review and untick messages of a multi-message proposal before approving it. */
+function withEmailOptions(actions: PendingAction[], emails: Email[]): PendingAction[] {
+  for (const action of actions) {
+    const ids = action.payload.emailIds ?? [];
+    if (ids.length < 2) continue;
+    action.payload.emailOptions = ids.map((id) => {
+      const email = emails.find((item) => item.id === id);
+      return { id, sender: email ? (email.labels.includes('SENT') ? `Para ${email.recipient}` : email.senderName) : 'Correo', subject: email?.subject ?? id, date: email?.date ?? '' };
+    });
+  }
+  return actions;
+}
+
+/** First words of what the person dictated, as the subject of a new message (editable before sending). */
+function subjectFromBody(body: string | null): string {
+  if (!body) return 'Sin asunto';
+  const list = body.replace(/[.!?¡¿,;:]+$/g, '').split(/\s+/).slice(0, 8);
+  // Never end on a connecting word ("…al jueves a las").
+  while (list.length > 3 && /^(?:a|al|de|del|la|las|el|los|en|y|o|que|con|para|por|un|una|se|me|te|su|sus)$/i.test(list[list.length - 1])) list.pop();
+  const words = list.join(' ');
+  const subject = words.length > 60 ? `${words.slice(0, 57)}…` : words;
+  return subject.charAt(0).toUpperCase() + subject.slice(1);
+}
+
 export class AgentEngine {
   /**
    * Rolling conversation history sent to the LLM for multi-turn context.
    * Capped at MAX_HISTORY_MESSAGES to stay within token limits.
    */
   private conversationHistory: ChatMessage[] = [];
-  private static readonly MAX_HISTORY_MESSAGES = 12; // ~20 user/assistant pairs
+  private static readonly MAX_HISTORY_MESSAGES = 20; // 10 questions with their answers
 
   /** Clear all conversation memory (e.g. when starting a fresh session) */
   public clearHistory(): void {
@@ -75,13 +100,30 @@ export class AgentEngine {
     }
   }
 
+  /** Inbox the app loaded most recently, reused for a short time so each question does not re-download it. */
+  private inboxSnapshot: { key: string; at: number; emails: Email[] } | null = null;
+  private inboxScope = INBOX_SCOPE;
+  /** Same number of messages the person chose to load in Correo. */
+  public setInboxScope(count: number): void { this.inboxScope = count; }
+  /** After a change made in Correo, the next question reads the inbox again (cheap: unchanged messages are cached). */
+  public invalidateInboxSnapshot(): void { this.inboxSnapshot = null; }
+  public setInboxSnapshot(emails: Email[]): void {
+    this.inboxSnapshot = { key: mailProvider.getSessionKey(), at: Date.now(), emails };
+  }
+
   private async getAvailableEmails(): Promise<{ emails: Email[]; isReal: boolean }> {
     if (mailProvider.isConnected()) {
+      const snapshot = this.inboxSnapshot;
+      if (snapshot && snapshot.key === mailProvider.getSessionKey() && Date.now() - snapshot.at < 90_000) {
+        return { emails: snapshot.emails, isReal: true };
+      }
       try {
-        const realEmails = await mailProvider.fetchEmails('in:inbox', 15);
+        const realEmails = await mailProvider.fetchEmails('in:inbox', this.inboxScope);
+        this.setInboxSnapshot(realEmails);
         return { emails: realEmails, isReal: true };
       } catch (e) {
-        throw new Error(`${MAIL} real no está disponible. Renueva la autorización. No se ha cambiado al simulador.`);
+        const detail = e instanceof Error && e.message ? ` (${e.message})` : '';
+        throw new Error(`${MAIL} no respondió al leer la bandeja${detail}. Si continúa, renueva la autorización. No se ha cambiado al simulador.`);
       }
     }
     return { emails: emailProvider.getEmails(), isReal: false };
@@ -124,7 +166,9 @@ export class AgentEngine {
     emails: Email[],
     isReal: boolean,
     providerSource: string,
-    attachmentNames: string[] = []
+    attachmentNames: string[] = [],
+    /** Guidance for the model only. It is not shown in Historial nor kept in the chat memory. */
+    modelNote = ''
   ): Promise<AgentResponse> {
     const steps: AgentStep[] = [];
     const pendingActions: PendingAction[] = [];
@@ -158,7 +202,7 @@ ${inboxContext}`;
     const messages: ChatMessage[] = [
       { role: 'system', content: systemInstruction },
       ...this.conversationHistory,
-      currentUserMessage,
+      modelNote ? { ...currentUserMessage, content: `${currentUserMessage.content}\n\n${modelNote}` } : currentUserMessage,
     ];
 
     const toolCtx = {
@@ -205,7 +249,7 @@ ${inboxContext}`;
               }
             : executeAgentTool(call.function.name, args, toolCtx);
           steps.push(...result.steps);
-          pendingActions.push(...result.pendingActions);
+          pendingActions.push(...withEmailOptions(result.pendingActions, emails));
 
           if (result.autoLabel) {
             await this.applyLabels(result.autoLabel.emailIds, result.autoLabel.label, isReal);
@@ -350,7 +394,7 @@ ${inboxContext}`;
       const address = firstEmailAddress(prompt);
       const replyTo = address
         ? emails.find((email) => email.sender.toLowerCase() === address.toLowerCase())
-        : findReplyTarget(prompt, emails);
+        : wantsLatestFromPerson(prompt) ? latestFromPerson(emails) : findReplyTarget(prompt, emails);
       const recipient = address || replyTo?.sender;
       if (!recipient) {
         return answerOnly('¿A quién quieres escribir? Indica una dirección de correo o un remitente y asunto de tu bandeja. No usaré un destinatario por defecto.');
@@ -358,7 +402,7 @@ ${inboxContext}`;
       toolName = 'prepare_send_email';
       args = {
         recipient,
-        subject: replyTo ? `Re: ${replyTo.subject}` : 'Comunicación vía EmailAgent AI',
+        subject: replyTo ? `Re: ${replyTo.subject}` : subjectFromBody(dictatedBody(prompt)),
         body: `Hola,\n\n${dictatedBody(prompt) ?? MANUAL_BODY_PLACEHOLDER}\n\nSaludos,`,
         ...(replyTo ? { reply_to_email_id: replyTo.id } : {}),
       };
@@ -386,7 +430,7 @@ ${inboxContext}`;
 
     const result = executeAgentTool(toolName, args, toolCtx);
     steps.push(...result.steps);
-    pendingActions.push(...result.pendingActions);
+    pendingActions.push(...withEmailOptions(result.pendingActions, emails));
     if (result.autoLabel) {
       await this.applyLabels(result.autoLabel.emailIds, result.autoLabel.label, isReal);
     }
@@ -399,6 +443,10 @@ ${inboxContext}`;
     let finalAnswer = 'Listo. Revisa el panel para más detalles.';
     if (toolName === 'prepare_bulk_cleanup' && pendingActions.length === 0) {
       finalAnswer = 'No encontré promociones, spam ni suscripciones entre los correos cargados, así que no preparé ninguna eliminación.';
+    } else if (toolName === 'prepare_bulk_cleanup') {
+      const ids = pendingActions[0].payload.emailIds ?? [];
+      const list = emails.filter((email) => ids.includes(email.id)).slice(0, 8).map((email) => `• ${describeEmail(email)}`).join('\n');
+      finalAnswer = `Preparé mover a la papelera **${ids.length}** correo(s) de promociones o suscripciones:\n\n${list}\n\nRevísalo en **Acciones Pendientes**: nada se moverá hasta que lo apruebes, y podrás recuperarlos de la papelera.`;
     } else if (toolName === 'prepare_restore_emails' && pendingActions.length > 0) {
       finalAnswer = `Preparé la recuperación de **${pendingActions[0].payload.emailIds?.length ?? 0}** correo(s). Apruébala en **Acciones Pendientes** para devolverlos a la bandeja de entrada.`;
     } else if (toolName === 'prepare_delete_emails' && pendingActions.length > 0) {
@@ -440,6 +488,22 @@ ${inboxContext}`;
     // Deleting never depends on the model: the named message is found by code and always
     // becomes a real proposal, or a clear answer saying why it did not.
     const intent = detectIntent(prompt);
+    const insight = intent === 'other' || intent === 'negated' ? detectInsightRequest(prompt) : null;
+    if (insight) {
+      // Read-only questions ("¿qué tengo sin responder?") are answered from the mail itself.
+      const answer = describeInsight(insight, emails, isReal);
+      this.conversationHistory.push({ role: 'user', content: prompt });
+      this.conversationHistory.push({ role: 'assistant', content: answer });
+      this.trimHistory();
+      const what = insight === 'risks' ? 'señales de riesgo' : insight === 'awaiting' ? 'correos que esperan respuesta' : 'resumen de la bandeja';
+      return {
+        steps: [
+          { type: 'THINKING', message: `Consulta de análisis: ${what}`, timestamp: this.timestamp() },
+          { type: 'TOOL_CALL', message: `Análisis local de ${emails.length} correo(s) cargados (sin enviar datos a la IA)`, timestamp: this.timestamp() },
+        ],
+        pendingActions: [], auditLogs: [], usedLlm: false, finalAnswer: answer,
+      };
+    }
     if (intent === 'negated') return this.runRuleBasedAgent(prompt, emails, isReal, providerSource);
     if (intent === 'restore') {
       // Recovering mail only looks in the trash, and is resolved by code like deleting.
@@ -477,11 +541,21 @@ ${inboxContext}`;
       return this.runRuleBasedAgent(prompt, pool, isReal, providerSource);
     }
 
+    // "Reply to the latest message from a person": the message is chosen by code, the model only writes.
+    let modelNote = '';
+    if (intent === 'send' && wantsLatestFromPerson(prompt)) {
+      const target = latestFromPerson(emails);
+      if (!target) {
+        return { steps: [], pendingActions: [], auditLogs: [], usedLlm: false, finalAnswer: 'No encontré correos recientes escritos por una persona (solo notificaciones o boletines), así que no preparé ninguna respuesta.' };
+      }
+      modelNote = `[Correo elegido por NexoMail: id=${target.id}, de ${target.senderName} <${target.sender}>, asunto "${target.subject}". Responde a este correo con prepare_send_email y reply_to_email_id=${target.id}.]`;
+    }
+
     const health = await fetchLlmHealth();
 
     if (health.configured) {
       try {
-        return await this.runLlmAgent(prompt, emails, isReal, providerSource, attachmentNames);
+        return await this.runLlmAgent(prompt, emails, isReal, providerSource, attachmentNames, modelNote);
       } catch (err) {
         if(sessionKey!==mailProvider.getSessionKey())throw new Error('La sesión cambió. Inicia otra consulta.');
         console.warn('LLM no disponible; se usará el motor de reglas.');

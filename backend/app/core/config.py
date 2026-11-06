@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    PROJECT_NAME: str = "EmailAgent Gmail y Outlook"
+    PROJECT_NAME: str = "NexoMail Gmail y Outlook"
     EXTENSION_ACCESS_TOKEN: SecretStr = SecretStr('')
     VERSION: str = "1.0.0"
     API_PREFIX: str = "/api"
@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     LLM_MESSAGE_LIMIT: int = Field(default=6, ge=1, le=12)
     ANTHROPIC_API_KEY: SecretStr = SecretStr('')
     LLM_MAX_OUTPUT_TOKENS: int = Field(default=1200, ge=256, le=4096)
-    LLM_CONTEXT_CHARS: int = Field(default=8000, ge=4000, le=48000)
+    LLM_CONTEXT_CHARS: int = Field(default=32000, ge=4000, le=48000)
     OLLAMA_URL: str = "http://127.0.0.1:11434"
 
     # Orígenes permitidos para CORS (Frontend Angular)

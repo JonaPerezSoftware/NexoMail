@@ -36,7 +36,7 @@ chrome.runtime.onMessage.addListener((message,sender,reply)=>{
 chrome.action.onClicked.addListener(async tab=>{
   if(!tab?.id || !detectPlatform(tab.url)){chrome.runtime.openOptionsPage();return;}
   try{await chrome.tabs.sendMessage(tab.id,{type:'EMAILAGENT_TOGGLE_FLOATING'});await chrome.action.setBadgeText({tabId:tab.id,text:''});}
-  catch{await chrome.action.setBadgeText({tabId:tab.id,text:'!'});await chrome.action.setTitle({tabId:tab.id,title:'Recarga Gmail u Outlook para activar la burbuja EmailAgent.'});}
+  catch{await chrome.action.setBadgeText({tabId:tab.id,text:'!'});await chrome.action.setTitle({tabId:tab.id,title:'Recarga Gmail u Outlook para activar la burbuja de NexoMail.'});}
 });
 chrome.tabs.onUpdated.addListener((id,change,tab)=>{if(change.status==='complete' && detectPlatform(tab.url)){chrome.action.setBadgeText({tabId:id,text:''});chrome.action.setTitle({tabId:id,title:'Abrir o minimizar el chat flotante'});}});
 chrome.runtime.onMessage.addListener((message,sender,reply)=>{

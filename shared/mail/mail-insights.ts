@@ -22,6 +22,51 @@ const activeFiles=/\.(?:html?|svg|docm|xlsm|pptm|zip|rar|7z)$/i;
 const host=(value:string)=>{try{return new URL(value).hostname.toLowerCase().replace(/\.$/,'');}catch{return '';}};
 const related=(a:string,b:string)=>a===b || a.endsWith('.'+b) || b.endsWith('.'+a);
 
+export interface LinkCheck {
+  /** Destination as the browser would open it, or null if it cannot be read. */
+  url:URL|null;
+  domain:string;
+  /** True for protocols other than http(s), which are never opened. */
+  blocked:boolean;
+  findings:{reason:string;weight:number}[];
+  /** Weight 4 or more: the link most likely tries to deceive. */
+  danger:boolean;
+}
+
+/**
+ * Checks one link on this device, without visiting it: where it really goes and whether its
+ * address or visible text tries to deceive. It does not consult lists of known malicious sites.
+ */
+export function checkLink(raw:string,visibleText=''):LinkCheck{
+  const trimmed=raw.trim();
+  const expanded=trimmed.startsWith('//')?'https:'+trimmed:/^www\./i.test(trimmed)?'https://'+trimmed:trimmed;
+  const findings:{reason:string;weight:number}[]=[];
+  const issue=(reason:string,weight:number)=>{if(!findings.some(f=>f.reason===reason))findings.push({reason,weight});};
+  let url:URL;
+  try{url=new URL(expanded);}catch{return {url:null,domain:'',blocked:false,findings:[{reason:'No se pudo comprobar el destino del enlace.',weight:1}],danger:false};}
+  if(!['http:','https:'].includes(url.protocol)){
+    issue('El enlace utiliza un protocolo que puede ejecutar contenido o abrir otra aplicación.',4);
+    return {url,domain:'',blocked:true,findings,danger:true};
+  }
+  const domain=url.hostname.toLowerCase();
+  if(url.protocol==='http:')issue('Hay un enlace sin cifrado HTTPS.',1);
+  if(url.username || url.password)issue('El enlace oculta el destino utilizando credenciales antes del dominio.',4);
+  if(/(?:^|\.)xn--/i.test(domain))issue('El dominio contiene caracteres internacionalizados: comprueba posibles imitaciones.',1);
+  if(/^\d{1,3}(?:\.\d{1,3}){3}$/.test(domain) || domain.includes(':'))issue('El enlace apunta a una dirección IP en lugar de un dominio.',2);
+  if(shorteners.has(domain))issue('Un enlace acortado oculta el destino final.',1);
+  if(/[​-‏‪-‮⁦-⁩]/.test(trimmed))issue('El enlace contiene caracteres invisibles o de dirección de texto.',3);
+  const displayed=visibleText.trim().match(/^(?:https?:\/\/|www\.)[^\s]+$/i)?.[0] ?? visibleText.trim().match(/^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/\S*)?$/i)?.[0];
+  if(displayed){const visibleHost=host(/^https?:\/\//i.test(displayed)?displayed:'https://'+displayed);
+    if(visibleHost && !related(visibleHost,domain))issue('El texto muestra '+visibleHost+', pero el enlace lleva a '+domain+'.',4);
+  }
+  if(sensitiveFiles.test(url.pathname))issue('El enlace parece descargar un archivo ejecutable o un acceso directo.',4);
+  // Known brand names are a heuristic, never a sender authentication result.
+  for(const [brand,official] of [['microsoft',['microsoft.com','live.com','office.com','microsoftonline.com']],['google',['google.com','gmail.com']],['paypal',['paypal.com']]] as [string,string[]][]){
+    if(domain.includes(brand) && !official.some(d=>domain===d || domain.endsWith('.'+d)))issue('Un dominio incluye el nombre de '+brand+' fuera de sus dominios habituales.',2);
+  }
+  return {url,domain,blocked:false,findings,danger:findings.some(f=>f.weight>=4)};
+}
+
 /** Template contents are inert: scripts, images and frames are never inserted in the document. */
 export function inspectHtml(html:string):{text:string;anchors:{href:string;text:string}[];truncated:boolean} {
   const template=document.createElement('template');
@@ -79,34 +124,10 @@ export function analyzeMail(input:MailInput):MailInsights {
     if(!raw || raw.startsWith('#') || /^(?:mailto|tel|cid):/i.test(raw))continue;
     const expanded=raw.startsWith('//')?'https:'+raw:/^www\./i.test(raw)?'https://'+raw:raw;
     if(seen.has(expanded))continue;seen.add(expanded);
-    const linkReasons:string[]=[];
-    const issue=(reason:string,weight:number)=>{linkReasons.push(reason);warn(reason,weight);};
-    let url:URL;
-    try{url=new URL(expanded);}catch{
-      links.push({domain:'Destino no interpretable',reasons:['No se pudo comprobar el destino del enlace.']});
-      warn('Un enlace no permite identificar su destino.',1);continue;
-    }
-    if(!['http:','https:'].includes(url.protocol)){
-      issue('El enlace utiliza un protocolo que puede ejecutar contenido o abrir otra aplicación.',4);
-      links.push({domain:'Protocolo bloqueado: '+url.protocol,reasons:linkReasons});continue;
-    }
-    const domain=url.hostname.toLowerCase();
-    if(url.protocol==='http:')issue('Hay un enlace sin cifrado HTTPS.',1);
-    if(url.username || url.password)issue('El enlace oculta el destino utilizando credenciales antes del dominio.',4);
-    if(/(?:^|\.)xn--/i.test(domain))issue('El dominio contiene caracteres internacionalizados: comprueba posibles imitaciones.',1);
-    if(/^\d{1,3}(?:\.\d{1,3}){3}$/.test(domain) || domain.includes(':'))issue('El enlace apunta a una dirección IP en lugar de un dominio.',2);
-    if(shorteners.has(domain))issue('Un enlace acortado oculta el destino final.',1);
-    if(/[\u200b-\u200f\u202a-\u202e\u2066-\u2069]/.test(raw))issue('El enlace contiene caracteres invisibles o de dirección de texto.',3);
-    const displayed=candidate.text.trim().match(/^(?:https?:\/\/|www\.)[^\s]+$/i)?.[0];
-    if(displayed){const visibleHost=host(/^www\./i.test(displayed)?'https://'+displayed:displayed);
-      if(visibleHost && !related(visibleHost,domain))issue('El dominio del destino no coincide con la dirección mostrada en el enlace.',4);
-    }
-    if(sensitiveFiles.test(url.pathname))issue('El enlace parece descargar un archivo ejecutable o un acceso directo.',4);
-    // Known brand names are a heuristic, never a sender authentication result.
-    for(const [brand,official] of [['microsoft',['microsoft.com','live.com','office.com','microsoftonline.com']],['google',['google.com','gmail.com']],['paypal',['paypal.com']]] as [string,string[]][]){
-      if(domain.includes(brand) && !official.some(d=>domain===d || domain.endsWith('.'+d)))issue('Un dominio incluye el nombre de '+brand+' fuera de sus dominios habituales.',2);
-    }
-    links.push({domain,reasons:linkReasons});
+    const check=checkLink(raw,candidate.text);
+    for(const finding of check.findings)warn(finding.reason,finding.weight);
+    if(!check.url){warn('Un enlace no permite identificar su destino.',1);links.push({domain:'Destino no interpretable',reasons:['No se pudo comprobar el destino del enlace.']});continue;}
+    links.push({domain:check.blocked?'Protocolo bloqueado: '+check.url.protocol:check.domain,reasons:check.findings.map(finding=>finding.reason)});
   }
   if(/\b(contrasena|password|codigo de verificacion|verification code|codigo otp|numero de tarjeta|cvv|frase semilla|seed phrase)\b/.test(hay)
       && /\b(envia|envie|enviar|comparte|compartir|introduce|ingresa|confirma|confirmar|verifica|verify|enter|provide|send|reply)\b/.test(hay))warn('El mensaje parece solicitar credenciales, códigos o información financiera.',3);

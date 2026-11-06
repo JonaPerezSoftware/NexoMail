@@ -3,6 +3,8 @@ export interface StoredDraft {id:string;to:string;cc:string;bcc:string;subject:s
 export interface StoredPreferences {theme:'light'|'dark';strict_mode:boolean;llm_enabled:boolean;auto_grouping:boolean}
 export interface StoredAudit {id:string;action_type:string;status:string;description:string;details:string;occurred_at:string}
 export type Section='chat'|'drafts'|'preferences';
+/** A proposal waiting for approval, as the extension shows it. Attachment contents are never stored. */
+export interface StoredProposal {id:string;action_type:string;proposal:Record<string,unknown>;created_at:string}
 export interface StoredWorkspace {account:{provider:string;email:string};sections:{chat:{revision:number;data:StoredChat[]};drafts:{revision:number;data:StoredDraft[]};preferences:{revision:number;data:StoredPreferences|null}};audit:StoredAudit[]}
 type Host={apiBaseUrl:string;pairingToken:string};
 /** Instance is bound to one live account. It never stores the OAuth token. */
@@ -20,6 +22,8 @@ export class WorkspaceStorage {
   private queues:Partial<Record<Section,Promise<unknown>>>={};
   private auditIds=new Set<string>();
   private auditQueue:Promise<unknown>=Promise.resolve();
+  private proposalQueue:Promise<unknown>=Promise.resolve();
+  private proposalSnapshot='';
   private provider:'gmail'|'microsoft';
   private config:Host;
   private token:()=>Promise<string>;
@@ -34,7 +38,8 @@ export class WorkspaceStorage {
     if(!allowed())throw new Error('La cuenta cambió.');
     const token=await this.token();
     if(!allowed())throw new Error('La cuenta cambió.');
-    const encoded=body===undefined?undefined:JSON.stringify(body);
+    // NFC keeps letters like «ñ» as one character, so every database encoding stores them intact.
+    const encoded=body===undefined?undefined:JSON.stringify(body).normalize('NFC');
     if(encoded && new TextEncoder().encode(encoded).length>250000)throw new Error('El contenido supera el límite de guardado. Divide el chat o reduce los borradores.');
     const response=await fetch(this.config.apiBaseUrl+'/api/storage/'+this.provider+path,{
       method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json','X-EmailAgent-Token':this.config.pairingToken,'Authorization':'Bearer '+token},
@@ -89,6 +94,22 @@ export class WorkspaceStorage {
     });
     this.queues[section]=operation;
     return operation.catch(error=>{if(this.active)this.status('Cambios sin guardar: '+(error as Error).message);throw error;});
+  }
+  async loadProposals():Promise<StoredProposal[]>{
+    if(!this.ready)return [];
+    const data=await this.request('/proposals');
+    const list=Array.isArray(data.proposals)?data.proposals as StoredProposal[]:[];
+    this.proposalSnapshot=JSON.stringify(list.map(item=>({...item,created_at:new Date(item.created_at).toISOString()})));
+    return list;
+  }
+  /** Replaces the saved list; calls are queued so the last one always wins. */
+  saveProposals(list:StoredProposal[]){
+    if(!this.ready)return;
+    const snapshot=JSON.stringify(list);
+    if(snapshot===this.proposalSnapshot)return;
+    this.proposalSnapshot=snapshot;
+    this.proposalQueue=this.proposalQueue.catch(()=>{}).then(()=>this.request('/proposals',{proposals:list.slice(0,50)}))
+      .catch(error=>{this.proposalSnapshot='';if(this.active)this.status('Cambios sin guardar: '+(error as Error).message);});
   }
   appendAudit(events:StoredAudit[]){
     if(!this.ready)return;

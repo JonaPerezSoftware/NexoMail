@@ -18,7 +18,7 @@ def connect():
     return psycopg.connect(host=settings.DB_HOST,port=settings.DB_PORT,
         dbname=settings.DB_NAME,user=settings.DB_USER,
         password=settings.DB_PASSWORD.get_secret_value(),connect_timeout=5,
-        options='-c search_path=nexomail -c statement_timeout=10000',row_factory=dict_row)
+        options='-c search_path=nexomail -c statement_timeout=10000 -c client_encoding=UTF8',row_factory=dict_row)
 
 def initialize():
     global _ready

@@ -3,6 +3,7 @@ import { FileText, Image as ImageIcon, Paperclip, Send, X } from 'lucide-react';
 import type { MailFile } from '../types/email';
 import { MAX_ATTACHMENT_BYTES } from '../services/mailProvider';
 import { MAX_ATTACHMENT_LABEL } from '../services/platform';
+import { formatSize, readMailFile } from '../services/mailFiles';
 
 export interface ComposeValue { to: string; subject: string; body: string; files: MailFile[]; draftId?: string }
 
@@ -15,7 +16,6 @@ interface Props {
 }
 
 const validAddress = (value: string) => /^[^\s<>@,;]+@[^\s<>@,;]+\.[^\s<>@,;]+$/.test(value.trim());
-const formatSize = (bytes: number) => bytes < 1048576 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1048576).toFixed(1)} MB`;
 
 /** New message, reply or saved draft. Same flow as Outlook: write, then approve in Acciones. */
 export function ComposeModal({ value, onClose, onSubmit, onSaveDraft }: Props) {
@@ -36,15 +36,9 @@ export function ComposeModal({ value, onClose, onSubmit, onSaveDraft }: Props) {
   const addFiles = async (list: FileList | null) => {
     setError('');
     const picked = [...(list ?? [])];
-    const total = draft.files.reduce((s, f) => s + f.size, 0) + picked.reduce((s, f) => s + f.size, 0);
-    if (total > MAX_ATTACHMENT_BYTES) { setError(`Los adjuntos superan ${MAX_ATTACHMENT_LABEL} en total.`); return; }
     try {
-      const read = await Promise.all(picked.map(file => new Promise<MailFile>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onerror = () => reject(new Error(file.name));
-        reader.onload = () => resolve({ name: file.name, type: file.type || 'application/octet-stream', size: file.size, data: String(reader.result).split(',')[1] ?? '' });
-        reader.readAsDataURL(file);
-      })));
+      const read = await Promise.all(picked.map(readMailFile));
+      if (draft.files.reduce((s, f) => s + f.size, 0) + read.reduce((s, f) => s + f.size, 0) > MAX_ATTACHMENT_BYTES) { setError(`Los adjuntos superan ${MAX_ATTACHMENT_LABEL} en total.`); return; }
       set({ files: [...draft.files, ...read] });
     } catch (e) { setError(`No se pudo leer ${e instanceof Error ? e.message : 'el archivo'}.`); }
     finally { if (fileInput.current) fileInput.current.value = ''; }
@@ -76,7 +70,7 @@ export function ComposeModal({ value, onClose, onSubmit, onSaveDraft }: Props) {
             {draft.files.map((file, index) => (
               <li key={index}>
                 {file.type.startsWith('image/') ? <ImageIcon aria-hidden="true" /> : <FileText aria-hidden="true" />}
-                <span>{file.name}</span><small>{formatSize(file.size)}</small>
+                <span>{file.name}</span><small>{file.originalSize ? <span title="Foto reducida para enviarla más rápido">{formatSize(file.originalSize)} → {formatSize(file.size)}</span> : formatSize(file.size)}</small>
                 <button type="button" className="cm-remove" onClick={() => set({ files: draft.files.filter((_, i) => i !== index) })} aria-label={`Quitar ${file.name}`}><X aria-hidden="true" /></button>
               </li>
             ))}

@@ -1,10 +1,12 @@
 import { useState } from 'react';
-import { Mail, MailCheck, Search, Trash2, ShieldCheck, ArrowLeft, RefreshCw, Undo2, Tag, Folder, PenSquare, Reply, Sparkles, MoreHorizontal, FileText, Pencil } from 'lucide-react';
+import { Mail, MailCheck, Search, Trash2, ShieldCheck, ArrowLeft, RefreshCw, Undo2, Tag, Folder, PenSquare, Reply, Sparkles, MoreHorizontal, FileText, Pencil, Loader2 } from 'lucide-react';
 import {MailDocument} from './MailDocument';
 import { MailSafety } from './MailSafety';
-import { MANUAL_CATEGORIES, type Email } from '../types/email';
+import { MANUAL_CATEGORIES, type Email, type MailAttachment } from '../types/email';
 import type { StoredDraft } from '@shared/storage/workspace-storage';
 import { MAIL } from '../services/platform';
+import { BusyButton } from './BusyButton';
+import { MailAttachments } from './MailAttachments';
 
 export type MailFolder = 'inbox' | 'sent' | 'drafts' | 'starred' | 'all' | 'trash';
 export const MAIL_FOLDERS: { id: MailFolder; name: string }[] = [
@@ -17,12 +19,14 @@ export const MAIL_FOLDERS: { id: MailFolder; name: string }[] = [
 ];
 
 interface Props {
-  updatedAt?:string;automatic:boolean;onAutomaticChange:(enabled:boolean)=>void;emails:Email[];onMarkRead:(id:string)=>void;onTrash:(ids:string[])=>void;
+  updatedAt?:string;automatic:boolean;onAutomaticChange:(enabled:boolean)=>void;emails:Email[];onMarkRead:(id:string)=>void|Promise<void>;onTrash:(ids:string[])=>void|Promise<void>;
   selectedCategory:string;onSelectCategory:(category:string)=>void;
   folder:MailFolder;onSelectFolder:(folder:MailFolder)=>void;folderEmails:Email[]|null;folderLoading:boolean;onRefresh:()=>void;refreshing:boolean;
   drafts:StoredDraft[];onOpenDraft:(draft:StoredDraft)=>void;onDiscardDraft:(id:string)=>void;
   onCompose:(prefill?:{to:string;subject:string})=>void;onReplyWithAI:(email:Email)=>void;
   onRestore:(ids:string[])=>Promise<void>;onSetCategory:(email:Email,category:string|null)=>Promise<void>;
+  loadLimit:number;maxLoaded:number;onLoadMore:()=>void;loadingMore:boolean;connected:boolean;
+  onListAttachments:(email:Email)=>Promise<MailAttachment[]>;onDownloadAttachment:(email:Email,attachment:MailAttachment)=>Promise<Blob>;
 }
 const categories=['Todos','Sin leer','Trabajo','Personal','Importante','Finanzas','Boletines','Sin clasificar','Con alertas'];
 
@@ -35,6 +39,8 @@ export function EmailInbox(p:Props){
   const [query,setQuery]=useState('');
   const [selectedId,setSelectedId]=useState<string|null>(null);
   const [busy,setBusy]=useState(false);
+  /** Which reader action is running, to show its own label ("Recuperando…", "Guardando…"). */
+  const [busyWhat,setBusyWhat]=useState('');
   const inTrash=folder==='trash',inSent=folder==='sent',inDrafts=folder==='drafts';
   const source=folder==='inbox'?emails:(p.folderEmails ?? []);
   const loading=folder!=='inbox' && !inDrafts && p.folderLoading && !p.folderEmails;
@@ -52,7 +58,7 @@ export function EmailInbox(p:Props){
     :inTrash?(loading?'cargando…':`${source.length} correo${source.length===1?'':'s'} · se eliminan solos a los 30 días`)
     :loading?'cargando…':`${source.length} cargado${source.length===1?'':'s'}${folder==='inbox' && p.updatedAt?` · actualizado ${p.updatedAt}`:''}`;
   function clearFilters(){setQuery('');onSelectCategory('Todos');}
-  async function run(task:()=>Promise<void>){setBusy(true);try{await task();}finally{setBusy(false);}}
+  async function run(task:()=>Promise<void>|void,what=''){if(busy)return;setBusy(true);setBusyWhat(what);try{await task();}finally{setBusy(false);setBusyWhat('');}}
   const who=(email:Email)=>inSent?`Para: ${email.recipient}`:email.senderName;
 
   return <div className={`gmail-inbox mx-inbox ${selected?'reader-open':''}`}>
@@ -110,6 +116,12 @@ export function EmailInbox(p:Props){
               </span>
             </button>;
           })}
+        {/* A full page means there may be older messages; the demo mailbox has no more to load. */}
+        {!loading && !inDrafts && p.connected && source.length>=p.loadLimit && p.loadLimit<p.maxLoaded && <div className="mx-more">
+          <button type="button" className="pa-btn pa-btn-secondary" onClick={p.onLoadMore} disabled={p.loadingMore}><RefreshCw aria-hidden="true" className={p.loadingMore?'spin':''}/>{p.loadingMore?'Cargando…':'Cargar más correos'}</button>
+          <small>{source.length} cargados · hasta {p.maxLoaded}</small>
+        </div>}
+        {!loading && !inDrafts && p.connected && source.length>=p.maxLoaded && <div className="mx-more"><small>Se muestran los {p.maxLoaded} más recientes. Usa la búsqueda o pide al asistente un correo concreto para ver otros.</small></div>}
       </div>
 
       <article className="gmail-message-reader mx-reader" aria-label="Contenido del correo">
@@ -125,31 +137,33 @@ export function EmailInbox(p:Props){
             {manualOf(selected).length>0 && <div className="mx-tags">{manualOf(selected).map(c=><span key={c} className="mx-tag mx-manual"><Tag aria-hidden="true"/>{c}</span>)}</div>}
             <div className="mx-reader-actions">
               {inTrash
-                ? <button type="button" className="pa-btn pa-btn-primary" disabled={busy} onClick={()=>run(async()=>{await p.onRestore([selected.id]);setSelectedId(null);})}><Undo2 aria-hidden="true"/>Recuperar a la bandeja de entrada</button>
+                ? <BusyButton className="pa-btn pa-btn-primary" disabled={busy} busyLabel="Recuperando…" onClick={()=>run(async()=>{await p.onRestore([selected.id]);setSelectedId(null);})}><Undo2 aria-hidden="true"/>Recuperar a la bandeja de entrada</BusyButton>
                 : <>
                   <button type="button" className="pa-btn pa-btn-primary" onClick={()=>p.onReplyWithAI(selected)}><Sparkles aria-hidden="true"/>Responder con IA</button>
                   <button type="button" className="pa-btn pa-btn-secondary" onClick={()=>p.onCompose({to:inSent?selected.recipient.replace(/^.*<([^>]+)>.*$/,'$1'):selected.sender,subject:selected.subject.toLowerCase().startsWith('re:')?selected.subject:`Re: ${selected.subject}`})}><Reply aria-hidden="true"/>Responder</button>
                   <label className="mx-classify">
                     <Tag aria-hidden="true"/>
                     <span className="mx-classify-label">Clasificar</span>
-                    <select aria-label="Clasificar este correo" disabled={busy} value={manualOf(selected)[0] ?? ''} onChange={event=>{const value=event.target.value;run(()=>p.onSetCategory(selected,value || null));}}>
+                    <select aria-label="Clasificar este correo" disabled={busy} value={manualOf(selected)[0] ?? ''} onChange={event=>{const value=event.target.value;run(()=>p.onSetCategory(selected,value || null),'classify');}}>
                       <option value="">{manualOf(selected).length?'Quitar clasificación':'Elegir categoría…'}</option>
                       {MANUAL_CATEGORIES.map(category=><option key={category} value={category}>{category}</option>)}
                     </select>
+                    {busyWhat==='classify' && <span className="mx-busy" role="status"><Loader2 aria-hidden="true" className="spin"/>Guardando…</span>}
                   </label>
                   <details className="ox-more">
                     <summary className="pa-btn pa-btn-secondary"><MoreHorizontal aria-hidden="true"/>Más</summary>
                     <div className="ox-menu" role="menu">
-                      <button type="button" role="menuitem" disabled={selected.read || busy} onClick={()=>onMarkRead(selected.id)}><MailCheck aria-hidden="true"/>{selected.read?'Ya está leído':'Marcar como leído'}</button>
+                      <button type="button" role="menuitem" disabled={selected.read || busy} onClick={()=>run(()=>onMarkRead(selected.id),'read')}>{busyWhat==='read'?<Loader2 aria-hidden="true" className="spin"/>:<MailCheck aria-hidden="true"/>}{busyWhat==='read'?'Marcando…':selected.read?'Ya está leído':'Marcar como leído'}</button>
                     </div>
                   </details>
-                  <button type="button" className="pa-btn pa-btn-danger-ghost mx-trash" disabled={busy} onClick={()=>onTrash([selected.id])}><Trash2 aria-hidden="true"/>Mover a la papelera</button>
+                  <BusyButton className="pa-btn pa-btn-danger-ghost mx-trash" disabled={busy} busyLabel="Moviendo a la papelera…" onClick={()=>run(async()=>{await onTrash([selected.id]);})}><Trash2 aria-hidden="true"/>Mover a la papelera</BusyButton>
                 </>}
             </div>
             {!inTrash && <p className="mx-classify-note">La categoría se guarda como etiqueta en tu {MAIL} y tiene prioridad sobre la agrupación automática. Los envíos se aprueban en Acciones.</p>}
           </header>
           {selected.insights && <MailSafety report={selected.insights}/>}
-          <p className="mx-safe"><ShieldCheck aria-hidden="true"/>Lectura protegida: los enlaces externos piden confirmación y las imágenes se bloquean.</p>
+          <p className="mx-safe"><ShieldCheck aria-hidden="true"/>Lectura protegida: el contenido activo se bloquea, cada enlace se revisa antes de abrirlo y las imágenes externas no se cargan hasta que lo pidas.</p>
+          <MailAttachments key={`att-${selected.id}`} email={selected} risky={!!selected.insights && selected.insights.level!=='none'} onList={p.onListAttachments} onDownload={p.onDownloadAttachment}/>
           <MailDocument key={selected.id} html={selected.bodyHtml} text={selected.body}/>
         </div> : <div className="pa-empty mx-reader-empty"><Mail aria-hidden="true"/><h3>Selecciona un correo</h3><p>{inTrash?'Ábrelo para revisarlo y recuperarlo si lo necesitas.':'Su contenido aparecerá aquí para que lo leas con calma.'}</p></div>}
       </article>

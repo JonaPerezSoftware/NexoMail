@@ -166,6 +166,14 @@ export function findReplyTarget(prompt: string, emails: Email[]): Email | null {
   return best && best.score >= 2 && best.score > (second?.score ?? 0) ? best.email : null;
 }
 
+/**
+ * Models sometimes escape line breaks twice, so the draft would show "\n" as text.
+ * Turns those sequences back into real line breaks.
+ */
+export function cleanMessageBody(text: string): string {
+  return text.replace(/\r\n/g, '\n').replace(/\\r\\n|\\n/g, '\n').replace(/\\t/g, '  ');
+}
+
 export function firstEmailAddress(prompt: string): string | null {
   return prompt.match(EMAIL_ADDRESS)?.[0] ?? null;
 }

@@ -1,9 +1,10 @@
 /** Build an isolated, passive email document. Never insert sender HTML into the app DOM. */
-export function mailDocument(html:string,images=false):{document:string;links:string[]}{
+export function mailDocument(html:string,images=false):{document:string;links:{href:string;text:string}[]}{
   const template=document.createElement('template');template.innerHTML=html.slice(0,500000);
   const allowed=new Set('div span p br hr table thead tbody tfoot tr td th col colgroup img a b strong i em u s small big sub sup h1 h2 h3 h4 h5 h6 ul ol li blockquote pre code center font style'.split(' '));
   const attrs=new Set('style class id title alt width height align valign bgcolor color size face border cellpadding cellspacing colspan rowspan dir lang'.split(' '));
-  const links:string[]=[];
+  /** Each destination with the text the sender showed for it, to spot links that pretend to go elsewhere. */
+  const links:{href:string;text:string}[]=[];
   const css=(value:string)=>value.replace(/@import[^;]*(;|$)/gi,'').replace(/url\s*\([^)]*\)/gi,'none').replace(/expression\s*\([^)]*\)/gi,'').replace(/-moz-binding\s*:[^;]*/gi,'').replace(/behavior\s*:[^;]*/gi,'');
   const url=(value:string|null)=>{try{const parsed=new URL(value || '');return parsed.protocol==='https:' || parsed.protocol==='http:'?parsed.href:'';}catch{return '';}};
   // A snapshot includes descendants of removed elements; they remain detached.
@@ -12,7 +13,7 @@ export function mailDocument(html:string,images=false):{document:string;links:st
     if(!allowed.has(tag)){element.remove();continue;}
     const image=tag==='img'?url(element.getAttribute('src')):'';
     const href=tag==='a'?url(element.getAttribute('href')):'';
-    if(href && !links.includes(href))links.push(href);
+    if(href && !links.some(link=>link.href===href))links.push({href,text:(element.textContent || '').trim().slice(0,200)});
     if(tag==='style')element.textContent=css(element.textContent || '');
     for(const attribute of Array.from(element.attributes)){
       if(!attrs.has(attribute.name.toLowerCase()))element.removeAttribute(attribute.name);

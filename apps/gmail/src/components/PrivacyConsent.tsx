@@ -1,17 +1,27 @@
 import { useEffect, useRef } from 'react';
 import { ShieldCheck } from 'lucide-react';
 
-/** Raising this version asks everyone to accept the policy again before connecting an account. */
-const POLICY_VERSION = '1';
-const POLICY_KEY = 'nexomail.privacy.accepted';
+/** Raising this version changes the text people accept; every connection asks again anyway. */
+export const POLICY_VERSION = '1';
+const LOG_KEY = 'nexomail.privacy.log';
 export const PRIVACY_POLICY_URL = '../../privacy.html';
 
-export function privacyAccepted(): boolean {
-  try { return localStorage.getItem(POLICY_KEY) === POLICY_VERSION; } catch { return false; }
+/** One accepted notice: which mailbox, which account was then connected, which policy version, and when. */
+export interface ConsentRecord { provider: string; email: string; version: string; acceptedAt: string }
+
+export function consentHistory(): ConsentRecord[] {
+  try {
+    const value = JSON.parse(localStorage.getItem(LOG_KEY) || '[]');
+    return Array.isArray(value) ? value.filter((item) => item && typeof item.acceptedAt === 'string') : [];
+  } catch { return []; }
 }
 
-function rememberAcceptance(): void {
-  try { localStorage.setItem(POLICY_KEY, POLICY_VERSION); } catch { /* the notice will show again next time */ }
+/** Kept in this browser only, after the connection it was accepted for succeeds. */
+export function recordConsent(provider: string, email: string): void {
+  try {
+    const record: ConsentRecord = { provider, email, version: POLICY_VERSION, acceptedAt: new Date().toISOString() };
+    localStorage.setItem(LOG_KEY, JSON.stringify([record, ...consentHistory()].slice(0, 20)));
+  } catch { /* the connection still works; only the local record is missing */ }
 }
 
 export function openPrivacyPolicy(): void {
@@ -20,7 +30,10 @@ export function openPrivacyPolicy(): void {
 
 interface Props { open: boolean; provider: string; onAccept: () => void; onCancel: () => void }
 
-/** Shown once before the first account connection: what NexoMail reads, where it keeps it, and who else sees it. */
+/**
+ * Shown every time an account is connected (also after disconnecting it): what NexoMail reads,
+ * where it keeps it, and who else sees it. Nothing is authorized until the person accepts.
+ */
 export function PrivacyConsent({ open, provider, onAccept, onCancel }: Props) {
   const accept = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -43,9 +56,10 @@ export function PrivacyConsent({ open, provider, onAccept, onCancel }: Props) {
           <li>Puedes retirar el acceso y borrar tus datos cuando quieras desde Ajustes.</li>
         </ul>
         <button type="button" className="pc-link" onClick={openPrivacyPolicy}>Leer la política de privacidad completa</button>
+        <p className="pc-note">Se pide cada vez que conectas una cuenta. La aceptación se registra con la fecha y la cuenta en Ajustes.</p>
         <div className="pc-actions">
           <button type="button" className="pa-btn pa-btn-secondary" onClick={onCancel}>Ahora no</button>
-          <button ref={accept} type="button" className="pa-btn pa-btn-primary" onClick={() => { rememberAcceptance(); onAccept(); }}>Aceptar y continuar</button>
+          <button ref={accept} type="button" className="pa-btn pa-btn-primary" onClick={onAccept}>Aceptar y continuar</button>
         </div>
       </section>
     </div>

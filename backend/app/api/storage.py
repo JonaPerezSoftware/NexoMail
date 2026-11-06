@@ -83,6 +83,15 @@ class AuditRecord(Strict):
     occurred_at:datetime
 class AuditBatch(Strict):
     events:list[AuditRecord]=Field(max_length=100)
+class ProposalRecord(Strict):
+    id:str=Field(min_length=1,max_length=150)
+    action_type:Literal['SEND_EMAIL','DELETE_EMAIL','BULK_CLEANUP','LABEL_EMAIL','RESTORE_EMAIL','MARK_READ','DRAFT_REPLY']
+    # The whole proposal as the extension shows it, without attachment contents.
+    proposal:dict[str,Any]
+    created_at:datetime
+class ProposalBatch(Strict):
+    proposals:list[ProposalRecord]=Field(max_length=50)
+MAX_PROPOSAL_BYTES=60000
 
 def account(connection,profile):
     return connection.execute('''INSERT INTO nexomail.tbl_mae_cuentas(id_cuenta,cod_proveedor,cod_sujeto_proveedor,txt_correo,nom_usuario,est_registro,fec_creacion,fec_modificacion,fec_ultimo_acceso)
@@ -149,6 +158,28 @@ def append_audit(provider:Provider,body:AuditBatch,authorization:str=Header(defa
                 VALUES(%s,%s,%s,%s,%s,%s,%s,now(),%s,%s) ON CONFLICT DO NOTHING''',(aid,event.id,event.action_type,event.status,event.description,event.details,utc(event.occurred_at),'extension_client','A'))
     return {'saved':True}
 
+@router.get('/{provider}/proposals')
+def load_proposals(provider:Provider,authorization:str=Header(default='')):
+    profile=identity(provider,authorization)
+    with database() as connection:
+        aid=account(connection,profile)
+        rows=connection.execute('SELECT id_propuesta,cod_tipo_accion,txt_propuesta,fec_creacion FROM nexomail.tbl_tra_propuestas WHERE id_cuenta=%s AND est_registro!=%s ORDER BY num_posicion',(aid,'E'))
+        return {'proposals':[{'id':row['id_propuesta'],'action_type':row['cod_tipo_accion'],'proposal':row['txt_propuesta'],'created_at':row['fec_creacion']} for row in rows]}
+
+@router.post('/{provider}/proposals')
+def save_proposals(provider:Provider,body:ProposalBatch,authorization:str=Header(default='')):
+    """Replaces the account's pending proposals with the list the extension shows."""
+    if len({item.id for item in body.proposals})!=len(body.proposals) or any(len(json.dumps(item.proposal,ensure_ascii=False))>MAX_PROPOSAL_BYTES for item in body.proposals):
+        raise HTTPException(422,'Las propuestas no tienen un formato válido o superan el límite.')
+    profile=identity(provider,authorization)
+    with database() as connection:
+        aid=account(connection,profile)
+        connection.execute('DELETE FROM nexomail.tbl_tra_propuestas WHERE id_cuenta=%s',(aid,))
+        for position,item in enumerate(body.proposals):
+            connection.execute('INSERT INTO nexomail.tbl_tra_propuestas(id_cuenta,id_propuesta,cod_tipo_accion,txt_propuesta,num_posicion,est_registro,fec_creacion,fec_modificacion) VALUES(%s,%s,%s,%s::jsonb,%s,%s,%s,now())',
+                (aid,item.id,item.action_type,json.dumps(item.proposal,ensure_ascii=False),position,'A',utc(item.created_at)))
+    return {'saved':True}
+
 @router.post('/{provider}/erase')
 def erase_workspace(provider:Provider,authorization:str=Header(default='')):
     profile=identity(provider,authorization)
@@ -158,6 +189,7 @@ def erase_workspace(provider:Provider,authorization:str=Header(default='')):
         connection.execute('DELETE FROM nexomail.tbl_tra_mensajes_chat WHERE id_cuenta=%s',(aid,))
         connection.execute('DELETE FROM nexomail.tbl_tra_borradores WHERE id_cuenta=%s',(aid,))
         connection.execute('DELETE FROM nexomail.tbl_cfg_preferencias_usuario WHERE id_cuenta=%s',(aid,))
+        connection.execute('DELETE FROM nexomail.tbl_tra_propuestas WHERE id_cuenta=%s',(aid,))
         connection.execute('DELETE FROM nexomail.tbl_aud_eventos WHERE id_cuenta=%s',(aid,))
         for section in ('chat','drafts','preferences'):
             connection.execute('''INSERT INTO nexomail.tbl_tra_versiones_espacio(id_cuenta,cod_seccion,num_revision,est_registro,fec_modificacion) VALUES(%s,%s,1,%s,now())

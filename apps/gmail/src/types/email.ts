@@ -4,6 +4,18 @@ import type { MailInsights } from '@shared/mail/mail-insights';
 
 export type EmailCategory = 'Trabajo' | 'Finanzas' | 'Urgente' | 'Suscripciones' | 'Personal' | 'Notificaciones' | 'Importante' | 'Boletines' | 'Sin clasificar';
 
+/** A file attached to a received message. Its content is downloaded only when the person asks. */
+export interface MailAttachment {
+  id: string;
+  name: string;
+  type: string;
+  size: number;
+  /** Small files Gmail sends inside the message (base64url); larger ones are fetched by id. */
+  data?: string;
+  /** Outlook items such as an attached email or event, which cannot be downloaded as a file. */
+  unsupported?: boolean;
+}
+
 export interface Email {
   insights?: MailInsights;
   id: string;
@@ -26,6 +38,8 @@ export interface Email {
   manualCategories?: string[];
   trashed?: boolean;
   archived?: boolean;
+  attachments?: MailAttachment[];
+  hasAttachments?: boolean;
 }
 
 export type SafetyLevel = 'SAFE_AUTO' | 'REQUIRES_APPROVAL' | 'BLOCKED';
@@ -48,6 +62,8 @@ export interface MailFile {
   size: number;
   /** Base64 content, without the data: prefix. */
   data: string;
+  /** Size before a large photo was reduced; absent when the file is sent as is. */
+  originalSize?: number;
 }
 
 /** Categories a person can assign by hand; stored as Gmail labels with the same name. */
@@ -56,6 +72,8 @@ export const MANUAL_CATEGORIES = ['Trabajo', 'Personal', 'Importante', 'Finanzas
 export interface ActionPayload {
   savedDraftId?: string;
   emailIds?: string[];
+  /** Every message the proposal found; emailIds is the subset the person keeps selected. */
+  emailOptions?: { id: string; sender: string; subject: string; date: string }[];
   recipient?: string;
   subject?: string;
   body?: string;
@@ -65,6 +83,8 @@ export interface ActionPayload {
   isReal?: boolean;
   sessionKey?: string;
   attachments?: MailFile[];
+  /** Names of files that were attached before a reload; their contents are not kept. */
+  omittedAttachments?: string[];
 }
 
 export interface PendingAction {
@@ -79,6 +99,8 @@ export interface PendingAction {
   aiExplanation: string;
   impactScore: 'Bajo' | 'Medio' | 'Alto' | 'Crítico';
   isEditable?: boolean;
+  /** Brought back from PostgreSQL after a reload: shown with a note to review it again. */
+  restored?: boolean;
 }
 
 export interface AuditLog {

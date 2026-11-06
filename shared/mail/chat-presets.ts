@@ -3,12 +3,17 @@ export const CHAT_GREETING =
   '¡Hola! Soy tu **Agente de IA para Gestión de Correo**. Puedo leer, clasificar, redactar y ejecutar acciones en lenguaje natural.\n\n' +
   'Recuerdo el contexto de nuestra conversación y todas las acciones sensibles requieren tu autorización.';
 
-export type QuickActionId = 'urgent' | 'unread' | 'reply' | 'label';
+export type QuickActionId = 'briefing' | 'awaiting' | 'reply' | 'risks' | 'cleanup';
 
-/** Each prompt is worded so both rule engines route it correctly, with or without AI. */
+/**
+ * The requests that save the most time. Each prompt is worded so the agent routes it the same way
+ * with or without AI: briefing, awaiting and risks are computed from the mail; reply and cleanup
+ * only prepare proposals that wait for approval.
+ */
 export const QUICK_ACTIONS: { id: QuickActionId; label: string; prompt: string }[] = [
-  { id: 'urgent', label: 'Resumir urgentes', prompt: 'Hazme un resumen de los correos urgentes de hoy' },
-  { id: 'unread', label: 'Resumir no leídos', prompt: 'Resume mis correos no leídos' },
-  { id: 'reply', label: 'Redactar respuesta', prompt: 'Redacta una respuesta al correo seleccionado' },
-  { id: 'label', label: 'Etiquetar trabajo', prompt: 'Etiqueta como Trabajo los correos sin leer del proyecto' },
+  { id: 'briefing', label: 'Resumen del día', prompt: 'Dame el resumen del día de mi bandeja' },
+  { id: 'awaiting', label: 'Por responder', prompt: '¿Qué correos están esperando mi respuesta?' },
+  { id: 'reply', label: 'Responder al último', prompt: 'Redacta una respuesta al último correo que me escribió una persona' },
+  { id: 'risks', label: 'Revisar sospechosos', prompt: '¿Tengo correos sospechosos o de phishing?' },
+  { id: 'cleanup', label: 'Limpiar promociones', prompt: 'Limpia mi bandeja: mueve a la papelera las promociones y suscripciones' },
 ];

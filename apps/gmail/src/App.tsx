@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Header } from './components/Header';
 import { WorkspaceStorage,boundedChat,isStorageProblem } from '@shared/storage/workspace-storage';
 import type { StoredDraft } from '@shared/storage/workspace-storage';
@@ -11,24 +11,27 @@ import { AuditLogView } from './components/AuditLogView';
 import { GmailAuthModal } from './components/GmailAuthModal';
 import { emailProvider } from './services/mockEmailProvider';
 import { mailProvider } from './services/mailProvider';
-import { MAIL, ACCOUNT, STORAGE_PROVIDER } from './services/platform';
+import { MAIL, ACCOUNT, STORAGE_PROVIDER, LOAD_STEP, MAX_LOADED, savedMailCount, saveMailCount } from './services/platform';
 import { agentEngine } from './services/agentEngine';
 import { parseStamp } from './services/dates';
+import { fromStoredProposals, toStoredProposals } from './services/proposalStore';
 import { guardrails } from './services/guardrails';
-import type { Email, PendingAction, AuditLog, AgentStep, MailFile } from './types/email';
+import type { Email, PendingAction, AuditLog, AgentStep, MailFile, MailAttachment } from './types/email';
 import { Mail, ShieldAlert, History, AlertTriangle, Bot, Settings, LayoutDashboard } from 'lucide-react';
 import { analyzeMail } from '@shared/mail/mail-insights';
 import '@shared/styles/mail-insights.css';
 import '@shared/styles/nexo-ui.css';
 import './gmail-reader.css';
 import { WorkspacePages } from './components/WorkspacePages';
-import { PrivacyConsent, privacyAccepted } from './components/PrivacyConsent';
+import { PrivacyConsent, recordConsent } from './components/PrivacyConsent';
 
 export function App() {
   const database=useRef<WorkspaceStorage|null>(null);
   const [storageStatus,setStorageStatus]=useState('PostgreSQL · Conecta tu cuenta para recuperar los datos');
   const [storageReady,setStorageReady]=useState(false);
   const [storageLoading,setStorageLoading]=useState(false);
+  /** Saving proposals starts only after the saved ones were read, so an empty list never overwrites them. */
+  const [proposalsReady,setProposalsReady]=useState(false);
   const [restoredChat,setRestoredChat]=useState<ChatViewMessage[]|null>(null);
   const [savedDrafts,setSavedDrafts]=useState<StoredDraft[]>([]);
   const [autoGrouping,setAutoGrouping]=useState(true);
@@ -45,16 +48,20 @@ export function App() {
   const authorizationPending=useRef(false);
   const [isAuthorizing,setIsAuthorizing]=useState(false);
   const [consentOpen,setConsentOpen]=useState(false);
-  /** The privacy notice is accepted once, before the first connection. */
-  async function authorizeGmail(){
-    if(!privacyAccepted()){setConsentOpen(true);return;}
-    return startGmailAuthorization();
+  /** Every connection goes through the privacy notice first, including after a disconnection. */
+  const consentClientId=useRef<string|undefined>(undefined);
+  async function authorizeGmail(clientId?:string){
+    if(authorizationPending.current)return;
+    consentClientId.current=clientId;
+    setConsentOpen(true);
   }
   async function startGmailAuthorization(){
     if(authorizationPending.current)return;
     authorizationPending.current=true;setIsAuthorizing(true);setGmailError(null);
     try{
-      await mailProvider.connect();
+      await mailProvider.connect(consentClientId.current);
+      // Recorded only once the account is really connected, with the account it applies to.
+      recordConsent(MAIL,mailProvider.accountEmail());
       setIsAuthModalOpen(false);setPendingActions([]);agentEngine.clearHistory();
       await refreshEmails();
     }catch(error){setGmailError(error instanceof Error?error.message:`${ACCOUNT} no completó la autorización.`);}
@@ -78,6 +85,11 @@ export function App() {
   const [mailFolder, setMailFolder] = useState<MailFolder>('inbox');
   const [folderEmails, setFolderEmails] = useState<Email[] | null>(null);
   const [folderLoading, setFolderLoading] = useState(false);
+  /** Messages to load: the chosen amount, plus whatever "Cargar más" added for the open folder. */
+  const [mailCount, setMailCount] = useState(savedMailCount);
+  const [loadLimit, setLoadLimit] = useState(savedMailCount);
+  const loadLimitRef = useRef(loadLimit);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [compose, setCompose] = useState<ComposeValue | null>(null);
   const [agentPrompt, setAgentPrompt] = useState<{ id: string; text: string } | null>(null);
@@ -90,7 +102,7 @@ export function App() {
     if (folder === 'inbox' || folder === 'drafts') return;
     setFolderLoading(true);
     try {
-      if (mailProvider.isConnected()) setFolderEmails(await mailProvider.fetchEmails(FOLDER_QUERIES[folder], 25));
+      if (mailProvider.isConnected()) setFolderEmails(await mailProvider.fetchEmails(FOLDER_QUERIES[folder], loadLimitRef.current));
       else {
         const all = emailProvider.getEmails();
         setFolderEmails(folder === 'trash' ? emailProvider.getTrashedEmails() : folder === 'sent' ? all.filter(e => e.labels.includes('Enviado')) : folder === 'starred' ? all.filter(e => e.starred) : all);
@@ -102,7 +114,14 @@ export function App() {
       setFolderLoading(false);
     }
   };
-  const selectFolder = (folder: MailFolder) => { setMailFolder(folder); setFolderEmails(null); setSelectedCategory('Todos'); void loadFolder(folder); };
+  const setLimit = (value: number) => { loadLimitRef.current = value; setLoadLimit(value); agentEngine.setInboxScope(value); };
+  const selectFolder = (folder: MailFolder) => { setLimit(mailCount); setMailFolder(folder); setFolderEmails(null); setSelectedCategory('Todos'); void loadFolder(folder); };
+  const loadMore = async () => {
+    setLimit(Math.min(MAX_LOADED, loadLimitRef.current + LOAD_STEP));
+    setLoadingMore(true);
+    try { if (mailFolder === 'inbox') await refreshEmails(); else await loadFolder(mailFolder); } finally { setLoadingMore(false); }
+  };
+  const changeMailCount = (value: number) => { saveMailCount(value); setMailCount(value); setLimit(value); if (mailFolder === 'inbox') void refreshEmails(); else void loadFolder(mailFolder); };
   const syncMail = async () => { setSyncing(true); try { if (mailFolder === 'inbox') await refreshEmails(); else await loadFolder(mailFolder); } finally { setSyncing(false); } };
 
   /** Writing by hand follows the same path as the agent: a proposal that waits in Acciones. */
@@ -126,6 +145,19 @@ export function App() {
   };
 
   /** Restoring is reversible and asked for directly in the mail tab, so it runs without a separate approval. */
+  /**
+   * Applies a change to the messages on screen. Gmail or Outlook already confirmed it, so the whole
+   * inbox is not downloaded again: that used to spend the account's per-minute quota.
+   */
+  const patchLocal = (ids: string[], change: (email: Email) => Email | null) => {
+    const apply = (list: Email[]) => list.flatMap(email => ids.includes(email.id) ? (change(email) ?? []) : [email]);
+    setEmails(prev => apply(prev));
+    setFolderEmails(prev => prev ? apply(prev) : prev);
+    agentEngine.invalidateInboxSnapshot();
+  };
+  /** Attachments come from the connected mailbox, or from the demo messages. */
+  const listAttachments = useCallback((email: Email) => mailProvider.isConnected() ? mailProvider.listAttachments(email) : emailProvider.listAttachments(email), []);
+  const downloadAttachment = useCallback((email: Email, attachment: MailAttachment) => mailProvider.isConnected() ? mailProvider.downloadAttachment(email, attachment) : emailProvider.downloadAttachment(email, attachment), []);
   const handleRestore = async (ids: string[]) => {
     try {
       if (mailProvider.isConnected()) await mailProvider.untrashEmails(ids);
@@ -135,7 +167,9 @@ export function App() {
       addAudit('RESTORE_EMAIL', 'Recuperación manual desde la papelera', 'FAILED', error instanceof Error ? error.message : 'No se pudo recuperar.');
       alert(error instanceof Error ? error.message : 'No se pudo recuperar el correo.');
     }
-    await Promise.all([loadFolder(mailFolder), refreshEmails()]);
+    // Leaves the trash at once; the inbox refresh downloads only the recovered messages.
+    setFolderEmails(prev => prev ? prev.filter(email => !ids.includes(email.id)) : prev);
+    await refreshEmails();
   };
 
   /** Manual categories are Gmail labels: replacing one removes the previous manual label first. */
@@ -149,12 +183,12 @@ export function App() {
         for (const old of previous) if (old !== category) emailProvider.removeLabel([email.id], old);
         if (category) emailProvider.labelEmails([email.id], category);
       }
+      patchLocal([email.id], item => ({ ...item, manualCategories: category ? [category] : [], labels: [...item.labels.filter(label => !previous.includes(label)), ...(category ? [category] : [])] }));
       addAudit('LABEL_EMAIL', `Clasificación manual: ${email.subject}`, 'HUMAN_APPROVED', category ? `Etiqueta «${category}» aplicada en ${MAIL}.` : 'Clasificación manual retirada.');
     } catch (error) {
       addAudit('LABEL_EMAIL', `Clasificación manual: ${email.subject}`, 'FAILED', error instanceof Error ? error.message : 'No se pudo clasificar.');
       alert(error instanceof Error ? error.message : 'No se pudo clasificar el correo.');
     }
-    await refreshEmails();
   };
 
   // Theme Management (Dark / Light)
@@ -212,9 +246,9 @@ export function App() {
     if (mailProvider.isConnected()) {
       try {
         const refreshKey=mailProvider.getSessionKey();
-        const realEmails = await mailProvider.fetchEmails('in:inbox', 15);
+        const realEmails = await mailProvider.fetchEmails('in:inbox', loadLimitRef.current);
         if(refreshKey!==mailProvider.getSessionKey())return;
-        setEmails(realEmails);setLastSync(new Date());
+        setEmails(realEmails);setLastSync(new Date());agentEngine.setInboxSnapshot(realEmails);
         setIsGmailConnected(true);
         return;
       } catch (err: any) {
@@ -242,7 +276,7 @@ export function App() {
   },[isProcessing,pendingActions.length,isAuthModalOpen]);
 
   useEffect(()=>{
-    database.current?.close();database.current=null;setStorageReady(false);setStorageLoading(false);
+    database.current?.close();database.current=null;setStorageReady(false);setProposalsReady(false);setStorageLoading(false);
     if(!isGmailConnected){setRestoredChat([]);setSavedDrafts([]);setAuditLogs([]);agentEngine.clearHistory();setStorageStatus('PostgreSQL · Conecta tu cuenta para recuperar los datos');return;}
     setStorageLoading(true);
     const key=mailProvider.getSessionKey();
@@ -261,6 +295,12 @@ export function App() {
       const prefs=data.sections.preferences.data;
       if(prefs){setTheme(prefs.theme);setStrictMode(prefs.strict_mode);guardrails.setStrictMode(prefs.strict_mode);setAutoGrouping(prefs.auto_grouping);}
       setStorageReady(true);
+      void store.loadProposals().then(list=>{
+        if(!active || key!==mailProvider.getSessionKey())return;
+        const restored=fromStoredProposals(list,key,mailProvider.isConnected());
+        if(restored.length)setPendingActions(prev=>[...prev,...restored.filter(item=>!prev.some(existing=>existing.id===item.id))]);
+        setProposalsReady(true);
+      }).catch(()=>{});
     }).catch(()=>{}).finally(()=>{if(active)setStorageLoading(false);});
     return()=>{active=false;store.close();};
   },[isGmailConnected]);
@@ -270,6 +310,7 @@ export function App() {
     window.addEventListener('pagehide',onUnload);
     return()=>{window.removeEventListener('beforeunload',onUnload);window.removeEventListener('pagehide',onUnload);};
   },[]);
+  useEffect(()=>{if(storageReady && proposalsReady)database.current?.saveProposals(toStoredProposals(pendingActions));},[pendingActions,storageReady,proposalsReady]);
   useEffect(()=>{if(storageReady)database.current?.schedule('drafts',savedDrafts);},[savedDrafts,storageReady]);
   useEffect(()=>{if(storageReady)database.current?.schedule('preferences',{theme,strict_mode:strictMode,llm_enabled:true,auto_grouping:autoGrouping});},[theme,strictMode,autoGrouping,storageReady]);
   useEffect(()=>{if(storageReady)database.current?.appendAudit(auditLogs.map(event=>({id:event.id,action_type:event.actionType,status:event.executionStatus,description:event.prompt,details:event.details,occurred_at:parseStamp(event.timestamp)?.toISOString() ?? new Date().toISOString()})));},[auditLogs,storageReady]);
@@ -314,7 +355,7 @@ export function App() {
         setAuditLogs(prev => [...res.auditLogs, ...prev]);
       }
 
-      await refreshEmails();
+      if (res.pendingActions.length > 0 || res.auditLogs.length > 0) await refreshEmails();
 
       return {
         answer: res.finalAnswer,
@@ -392,6 +433,15 @@ export function App() {
         ...prev
       ]);
     } catch (err: any) {
+      // Over the per-minute limit the provider refused the request, so nothing changed: the proposal stays to approve again.
+      if (/limitó temporalmente las peticiones/.test(err?.message ?? '')) {
+        attemptedActions.current.delete(action.id);
+        alert(`${err.message}
+
+La propuesta sigue en Acciones para que la apruebes de nuevo.`);
+        setAuditLogs(prev=>[{id:crypto.randomUUID(),timestamp:new Date().toISOString(),actionType:action.actionType,prompt:action.title,executionStatus:'FAILED',details:`${MAIL} limitó temporalmente las peticiones. No se hizo ningún cambio; la propuesta sigue pendiente.`},...prev]);
+        return;
+      }
       alert(`No se pudo confirmar la acción: ${err.message}. Revisa ${MAIL} antes de preparar otra propuesta. No se reintentará automáticamente.`);
       setPendingActions(prev=>prev.filter(item=>item.id!==action.id));
       setAuditLogs(prev=>[{id:crypto.randomUUID(),timestamp:new Date().toISOString(),actionType:action.actionType,prompt:action.title,executionStatus:'FAILED',details:'No se pudo confirmar el resultado. Sin reintento automático.'},...prev]);
@@ -399,7 +449,7 @@ export function App() {
       executingActions.current.delete(action.id);
     }
 
-    await refreshEmails();
+    void refreshEmails();
   };
 
   const handleRejectAction = (action: PendingAction) => {
@@ -420,21 +470,22 @@ export function App() {
   };
 
   const handleMarkRead = async (id: string) => {
-    if (mailProvider.isConnected()) {
-      await mailProvider.markAsRead(id);
-    } else {
-      emailProvider.markAsRead(id);
-    }
-    await refreshEmails();
+    try {
+      if (mailProvider.isConnected()) await mailProvider.markAsRead(id);
+      else emailProvider.markAsRead(id);
+    } catch { return; } // Opening a message never fails because of the read mark.
+    patchLocal([id], email => ({ ...email, read: true, labels: email.labels.filter(label => label !== 'UNREAD') }));
   };
 
   const handleTrash = async (ids: string[]) => {
-    if (mailProvider.isConnected()) {
-      await mailProvider.trashEmails(ids);
-    } else {
-      emailProvider.trashEmails(ids);
+    try {
+      if (mailProvider.isConnected()) await mailProvider.trashEmails(ids);
+      else emailProvider.trashEmails(ids);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'No se pudo mover a la papelera.');
+      return;
     }
-    await refreshEmails();
+    patchLocal(ids, () => null);
   };
 
   const unreadCount = emails.filter(e => !e.read).length;
@@ -457,7 +508,7 @@ export function App() {
       <Header
         pendingCount={pendingActions.length} totalEmails={emails.length} unreadCount={unreadCount}
         onRefresh={refreshEmails} isGmailConnected={isGmailConnected}
-        onOpenGmailAuth={()=>{if(isGmailConnected)setIsAuthModalOpen(true);else void authorizeGmail();}} onOpenSettings={()=>navigate('settings')}/>
+        onOpenGmailAuth={()=>{if(isGmailConnected)setIsAuthModalOpen(true);else void authorizeGmail();}} onOpenSettings={()=>navigate('settings')} authorizing={isAuthorizing}/>
       {isAuthorizing && <div className="storage-status" role="status">Esperando autorización en {ACCOUNT}…</div>}
       {gmailError && <div className="api-alert-banner" role="alert"><AlertTriangle size={17}/><span>{gmailError}</span><button disabled={isAuthorizing} onClick={()=>void authorizeGmail()} className="workspace-button">Reautorizar con {ACCOUNT}</button></div>}
       {isStorageProblem(storageStatus) && <div className="storage-status" role="alert"><span>{storageStatus}</span></div>}
@@ -475,15 +526,15 @@ export function App() {
             <AgentChat active={currentView==='chat'} externalPrompt={agentPrompt} onSendPrompt={handleSendPrompt} isProcessing={isProcessing || storageLoading} restoredMessages={restoredChat} onHistoryChange={saveChat}
               onClearHistory={()=>agentEngine.clearHistory()}/>
           </section>
-          <section className="workspace-page" hidden={currentView!=='inbox'}><EmailInbox updatedAt={lastSync?lastSync.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):undefined} automatic={autoGrouping} onAutomaticChange={setAutoGrouping} emails={emails} onMarkRead={handleMarkRead} onTrash={handleTrash} selectedCategory={selectedCategory} onSelectCategory={setSelectedCategory} folder={mailFolder} onSelectFolder={selectFolder} folderEmails={folderEmails} folderLoading={folderLoading} onRefresh={()=>void syncMail()} refreshing={syncing || folderLoading} drafts={savedDrafts} onOpenDraft={draft=>setCompose({to:draft.to,subject:draft.subject,body:draft.body,files:[],draftId:draft.id})} onDiscardDraft={id=>setSavedDrafts(list=>list.filter(d=>d.id!==id))} onCompose={prefill=>setCompose({to:prefill?.to ?? '',subject:prefill?.subject ?? '',body:'',files:[]})} onReplyWithAI={replyWithAI} onRestore={handleRestore} onSetCategory={handleSetCategory}/></section>
-          <section className="workspace-page workspace-scroll page-narrow" hidden={currentView!=='pending'}><div className="workspace-section-heading"><ShieldAlert size={21}/><h2>Acciones pendientes</h2><span className="workspace-count">{pendingActions.length}</span></div><p className="pa-intro">Revisa el destinatario y el contenido. Nada se ejecuta hasta que lo apruebes.</p><PendingActionsList pendingActions={pendingActions} onApprove={handleApproveAction} onReject={handleRejectAction} onGoToChat={()=>navigate('chat')}/></section>
+          <section className="workspace-page" hidden={currentView!=='inbox'}><EmailInbox updatedAt={lastSync?lastSync.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):undefined} automatic={autoGrouping} onAutomaticChange={setAutoGrouping} emails={emails} onMarkRead={handleMarkRead} onTrash={handleTrash} selectedCategory={selectedCategory} onSelectCategory={setSelectedCategory} folder={mailFolder} onSelectFolder={selectFolder} folderEmails={folderEmails} folderLoading={folderLoading} onRefresh={()=>void syncMail()} refreshing={syncing || folderLoading} drafts={savedDrafts} onOpenDraft={draft=>setCompose({to:draft.to,subject:draft.subject,body:draft.body,files:[],draftId:draft.id})} onDiscardDraft={id=>setSavedDrafts(list=>list.filter(d=>d.id!==id))} onCompose={prefill=>setCompose({to:prefill?.to ?? '',subject:prefill?.subject ?? '',body:'',files:[]})} onReplyWithAI={replyWithAI} onRestore={handleRestore} onSetCategory={handleSetCategory} onListAttachments={listAttachments} onDownloadAttachment={downloadAttachment} loadLimit={loadLimit} maxLoaded={MAX_LOADED} onLoadMore={()=>void loadMore()} loadingMore={loadingMore} connected={isGmailConnected}/></section>
+          <section className="workspace-page workspace-scroll page-narrow" hidden={currentView!=='pending'}><div className="workspace-section-heading"><ShieldAlert size={21}/><h2>Acciones pendientes</h2><span className="workspace-count">{pendingActions.length}</span></div><p className="pa-intro">Revisa el destinatario y el contenido. Nada se ejecuta hasta que lo apruebes.</p><PendingActionsList pendingActions={pendingActions} onApprove={handleApproveAction} onReject={handleRejectAction} onGoToChat={()=>navigate('chat')} onChange={()=>setPendingActions(list=>[...list])}/></section>
           <section className="workspace-page workspace-scroll page-medium" hidden={currentView!=='audit'}><AuditLogView logs={auditLogs}/></section>
-          {(currentView==='summary' || currentView==='settings') && <WorkspacePages storageStatus={storageStatus} storageReady={storageReady} onEraseStorage={eraseStoredData} view={currentView} emails={emails} pendingCount={pendingActions.length} logCount={auditLogs.length} theme={theme} strictMode={strictMode} onToggleTheme={handleToggleTheme} onToggleStrictMode={handleToggleStrictMode} onAuthorize={()=>{if(isGmailConnected)setIsAuthModalOpen(true);else void authorizeGmail();}} connected={isGmailConnected}/>}
+          {(currentView==='summary' || currentView==='settings') && <WorkspacePages storageStatus={storageStatus} storageReady={storageReady} onEraseStorage={eraseStoredData} view={currentView} emails={emails} pendingCount={pendingActions.length} logCount={auditLogs.length} theme={theme} strictMode={strictMode} onToggleTheme={handleToggleTheme} onToggleStrictMode={handleToggleStrictMode} onAuthorize={async()=>{if(isGmailConnected)setIsAuthModalOpen(true);else await authorizeGmail();}} authorizing={isAuthorizing} connected={isGmailConnected} mailCount={mailCount} onMailCount={changeMailCount}/>}
         </main>
       </div>
       <ComposeModal value={compose} onClose={()=>setCompose(null)} onSubmit={submitCompose} onSaveDraft={saveComposeDraft}/>
       <PrivacyConsent open={consentOpen} provider={MAIL} onCancel={()=>setConsentOpen(false)} onAccept={()=>{setConsentOpen(false);void startGmailAuthorization();}}/>
-      <GmailAuthModal isOpen={isAuthModalOpen} onClose={()=>setIsAuthModalOpen(false)} onBeforeDisconnect={()=>database.current?.flush()} onConnectSuccess={()=>{setIsAuthModalOpen(false);setPendingActions([]);agentEngine.clearHistory();refreshEmails();}}/>
+      <GmailAuthModal isOpen={isAuthModalOpen} onClose={()=>setIsAuthModalOpen(false)} onConnect={clientId=>{setIsAuthModalOpen(false);void authorizeGmail(clientId);}} onBeforeDisconnect={()=>database.current?.flush()} onConnectSuccess={()=>{setIsAuthModalOpen(false);setPendingActions([]);agentEngine.clearHistory();refreshEmails();}}/>
     </div>
   );
 }

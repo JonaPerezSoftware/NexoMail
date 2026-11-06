@@ -1,9 +1,11 @@
 import { PublicClientApplication, BrowserCacheLocation, LogLevel, EventType, InteractionRequiredAuthError, type AccountInfo, type AuthenticationResult } from '@azure/msal-browser';
 import { analyzeMail, inspectHtml } from '@shared/mail/mail-insights';
-import type { Email, EmailCategory, MailFile } from '../types/email';
+import type { Email, EmailCategory, MailAttachment, MailFile } from '../types/email';
+import { base64ToBlob } from './mailFiles';
 import { MANUAL_CATEGORIES } from '../types/email';
-import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_LABEL } from './platform';
+import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_LABEL, MAX_LOADED } from './platform';
 import { describeMicrosoftError } from './microsoftError';
+import { cleanMessageBody } from './mailIntent';
 import { captureSession, hydrateSession } from './microsoftSessionCache';
 
 const GRAPH = 'https://graph.microsoft.com/v1.0';
@@ -22,6 +24,27 @@ type GraphMessage = {
   hasAttachments?: boolean; toRecipients?: GraphAddress[]; replyTo?: GraphAddress[]; importance?: string;
 };
 type Mode = 'read' | 'write' | 'send';
+
+export const OUTLOOK_LIMIT_MESSAGE = 'Outlook limitó temporalmente las peticiones de tu cuenta. Espera un minuto y vuelve a intentarlo; no se hizo ningún cambio.';
+
+/**
+ * Graph throttles a mailbox that receives more than 4 requests at the same time.
+ * Every call takes one of 3 slots, so overlapping loads (inbox, folders, agent) wait their turn.
+ */
+class Slots {
+  private free: number;
+  private waiting: (() => void)[] = [];
+  constructor(size: number) { this.free = size; }
+  acquire(): Promise<void> {
+    if (this.free > 0) { this.free--; return Promise.resolve(); }
+    return new Promise(resolve => this.waiting.push(resolve));
+  }
+  release(): void {
+    const next = this.waiting.shift();
+    if (next) next(); else this.free++;
+  }
+}
+const graphSlots = new Slots(3);
 
 /** Gmail search syntax (as built by the shared agent) translated to Outlook KQL. */
 function toKql(query: string): string {
@@ -178,10 +201,24 @@ export class OutlookProvider {
       method, headers: { Authorization: 'Bearer ' + token, ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
       body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(45000),
     });
-    let response = await send(await this.token(mode, interactive));
-    // Only reads are retried, once. A write is never repeated automatically.
-    if (response.status === 401 && method === 'GET') response = await send(await this.token(mode, interactive));
+    const token = await this.token(mode, interactive);
+    await graphSlots.acquire();
+    let response: Response;
+    try {
+      response = await send(token);
+      // Only reads are retried. A write is never repeated automatically.
+      if (response.status === 401 && method === 'GET') response = await send(await this.token(mode, interactive));
+      // Graph says how long to wait when it throttles; reads wait that long (up to 10 s) and try again, twice at most.
+      for (let attempt = 1; attempt <= 2 && method === 'GET' && [429, 503, 504].includes(response.status); attempt++) {
+        const seconds = Number(response.headers.get('Retry-After'));
+        await new Promise(resolve => setTimeout(resolve, Math.min(10, Number.isFinite(seconds) && seconds > 0 ? seconds : attempt * 2) * 1000));
+        response = await send(token);
+      }
+    } finally {
+      graphSlots.release();
+    }
     if (session !== this.getSessionKey()) throw new Error('La sesión cambió durante la operación.');
+    if (response.status === 429) throw new Error(OUTLOOK_LIMIT_MESSAGE);
     if (!response.ok) {
       const data = await response.json().catch(() => ({})) as { error?: { message?: string } };
       throw new Error(data.error?.message || `Outlook respondió con el error ${response.status}.`);
@@ -194,10 +231,14 @@ export class OutlookProvider {
     const key = this.getSessionKey();
     if (this.folderIds?.key === key) return this.folderIds.ids;
     const ids: Record<string, string> = {};
-    await Promise.all(Object.entries(FOLDERS).map(async ([name, wellKnown]) => {
-      try { ids[name] = (await this.graph<{ id: string }>('GET', `/me/mailFolders/${wellKnown}?$select=id`)).id; } catch { /* folder not available */ }
-    }));
-    this.folderIds = { key, ids };
+    let throttled = false;
+    // One at a time: Graph allows only a few simultaneous requests per mailbox.
+    for (const [name, wellKnown] of Object.entries(FOLDERS)) {
+      try { ids[name] = (await this.graph<{ id: string }>('GET', `/me/mailFolders/${wellKnown}?$select=id`)).id; }
+      catch (error) { if ((error as Error).message === OUTLOOK_LIMIT_MESSAGE) throttled = true; /* otherwise the folder does not exist */ }
+    }
+    // A throttled lookup is asked again next time instead of being remembered incomplete.
+    if (!throttled) this.folderIds = { key, ids };
     return ids;
   }
 
@@ -207,13 +248,14 @@ export class OutlookProvider {
     const rest = query.replace(/\bin:(\w+)/g, (_, name: string) => { found.folder = name; return ''; }).replace(/\bis:starred\b/g, () => { found.flagged = true; return ''; }).trim();
     const { folder, flagged } = found;
     const wellKnown = folder ? FOLDERS[folder] : undefined;
-    const params = new URLSearchParams({ $top: String(Math.min(Math.max(maxResults, 1), 50)), $select: SELECT });
+    const params = new URLSearchParams({ $top: String(Math.min(Math.max(maxResults, 1), MAX_LOADED)), $select: SELECT });
     const search = toKql(rest);
     if (search) params.set('$search', `"${search}"`);
     else if (flagged) params.set('$filter', "flag/flagStatus eq 'flagged'");
     else params.set('$orderby', 'receivedDateTime desc');
     const base = wellKnown ? `/me/mailFolders/${wellKnown}/messages` : '/me/messages';
-    const [data, ids] = await Promise.all([this.graph<{ value?: GraphMessage[] }>('GET', `${base}?${params.toString().replace(/\+/g, '%20')}`), this.knownFolders()]);
+    const ids = await this.knownFolders();
+    const data = await this.graph<{ value?: GraphMessage[] }>('GET', `${base}?${params.toString().replace(/\+/g, '%20')}`);
     let messages = data.value || [];
     // Like Gmail, a search across all mail leaves out trash and spam.
     if (!wellKnown) messages = messages.filter(m => m.parentFolderId !== ids.trash && m.parentFolderId !== ids.spam);
@@ -248,6 +290,7 @@ export class OutlookProvider {
       starred: flaggedMessage,
       manualCategories: categories.filter(name => (MANUAL_CATEGORIES as readonly string[]).includes(name)),
       trashed: place === 'trash',
+      hasAttachments: !!m.hasAttachments,
     };
   }
 
@@ -273,6 +316,21 @@ export class OutlookProvider {
   labelEmails(ids: string[], labelName: string): Promise<void> { return this.updateCategories(ids, list => [...new Set([...list, labelName])]); }
   removeLabel(ids: string[], labelName: string): Promise<void> { return this.updateCategories(ids, list => list.filter(name => name.toLowerCase() !== labelName.toLowerCase())); }
 
+  /** Listed only when a message with attachments is opened; contents are not included. */
+  async listAttachments(email: Email): Promise<MailAttachment[]> {
+    if (!email.hasAttachments) return [];
+    const data = await this.graph<{ value?: { id: string; name?: string; contentType?: string; size?: number; '@odata.type'?: string }[] }>('GET', `/me/messages/${encodeURIComponent(email.id)}/attachments?$select=id,name,contentType,size`);
+    return (data.value || []).map(item => ({ id: item.id, name: item.name || 'adjunto', type: item.contentType || 'application/octet-stream', size: item.size || 0,
+      unsupported: item['@odata.type'] !== undefined && item['@odata.type'] !== '#microsoft.graph.fileAttachment' }));
+  }
+
+  async downloadAttachment(email: Email, attachment: MailAttachment): Promise<Blob> {
+    if (attachment.unsupported) throw new Error('Este adjunto es un elemento de Outlook (por ejemplo, un correo o un evento) y no se puede descargar como archivo.');
+    const data = await this.graph<{ contentBytes?: string }>('GET', `/me/messages/${encodeURIComponent(email.id)}/attachments/${encodeURIComponent(attachment.id)}`);
+    if (!data.contentBytes) throw new Error('Outlook no entregó el contenido del adjunto.');
+    return base64ToBlob(data.contentBytes, attachment.type);
+  }
+
   /** Opening a message never opens a Microsoft window: without write permission it simply stays unread. */
   async markAsRead(id: string): Promise<void> {
     if (!this.account) return;
@@ -286,7 +344,7 @@ export class OutlookProvider {
     if (!addresses.length || addresses.some(a => !/^[^\s<>@,;]+@[^\s<>@,;]+\.[^\s<>@,;]+$/.test(a)) || /[\r\n]/.test(subject)) throw new Error('Revisa el destinatario y el asunto.');
     if (attachments.reduce((sum, file) => sum + file.size, 0) > MAX_ATTACHMENT_BYTES) throw new Error(`Los adjuntos superan el límite de ${MAX_ATTACHMENT_LABEL} por mensaje.`);
     const message = {
-      subject: subject || '(Sin asunto)', body: { contentType: 'Text', content: body },
+      subject: subject || '(Sin asunto)', body: { contentType: 'Text', content: cleanMessageBody(body) },
       toRecipients: addresses.map(address => ({ emailAddress: { address } })),
       attachments: attachments.map(file => ({ '@odata.type': '#microsoft.graph.fileAttachment', name: file.name, contentType: file.type || 'application/octet-stream', contentBytes: file.data })),
     };

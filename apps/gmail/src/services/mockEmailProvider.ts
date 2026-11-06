@@ -1,4 +1,5 @@
-import type { Email } from '../types/email';
+import type { Email, MailAttachment } from '../types/email';
+import { base64ToBlob } from './mailFiles';
 
 export const INITIAL_EMAILS: Email[] = [
   {
@@ -18,6 +19,8 @@ Por favor ingrese al portal bancario o confirme respondiendo a este mensaje si a
 Atentamente,
 Departamento de Operaciones
 Banco Global`,
+    // Demo of deceptive links: the visible address and the real destination differ.
+    bodyHtml: '<p>Estimado cliente,</p><p>Requerimos su autorización inmediata para la transferencia pendiente #9842 por $4,500 USD.</p><p>Confirme en <a href="http://banco-global-verificacion.xyz/login">https://www.bancoglobal.com/seguridad</a> o desde este <a href="https://bit.ly/3xYzA1b">enlace rápido</a> antes de las 18:00.</p><p>Consulte nuestras condiciones en <a href="https://www.bancoglobal.com/condiciones">bancoglobal.com/condiciones</a>.</p><p>Atentamente,<br>Departamento de Operaciones</p>',
     date: 'Hoy, 09:30 AM',
     timestamp: Date.now() - 3600000 * 2,
     read: false,
@@ -47,7 +50,12 @@ Senior Cloud Architect`,
     read: false,
     category: 'Trabajo',
     priority: 'high',
-    labels: ['Proyecto AI', 'Reunión']
+    labels: ['Proyecto AI', 'Reunión'],
+    hasAttachments: true,
+    attachments: [
+      { id: 'demo-txt', name: 'propuesta-arquitectura.txt', type: 'text/plain', size: 74, data: 'UHJvcHVlc3RhIGRlIGFycXVpdGVjdHVyYSBDbG91ZCBBSSAoYXJjaGl2byBkZSBkZW1vc3RyYWNpw7NuIGRlIE5leG9NYWlsKS4=' },
+      { id: 'demo-png', name: 'diagrama.png', type: 'image/png', size: 68, data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' }
+    ]
   },
   {
     id: 'em-103',
@@ -118,6 +126,8 @@ Ana Gómez - RRHH`,
 ];
 
 export class MockEmailService {
+  public async listAttachments(email: Email): Promise<MailAttachment[]> { return email.attachments ?? []; }
+  public async downloadAttachment(_email: Email, attachment: MailAttachment): Promise<Blob> { return base64ToBlob(attachment.data ?? '', attachment.type); }
   private emails: Email[] = [...INITIAL_EMAILS];
 
   public getEmails(): Email[] {

@@ -82,3 +82,17 @@ CREATE TABLE IF NOT EXISTS nexomail.tbl_aud_eventos (
 CREATE INDEX IF NOT EXISTS idx_aud_cuenta_fecha ON nexomail.tbl_aud_eventos(id_cuenta, fec_ocurrencia DESC);
 CREATE INDEX IF NOT EXISTS idx_chat_cuenta_pos ON nexomail.tbl_tra_mensajes_chat(id_cuenta, num_posicion ASC);
 INSERT INTO nexomail.tbl_sis_migraciones(num_version, est_registro) VALUES(1, 'A') ON CONFLICT DO NOTHING;
+
+-- Version 2: proposals waiting for approval survive a reload. Attachments are never stored.
+CREATE TABLE IF NOT EXISTS nexomail.tbl_tra_propuestas (
+    id_propuesta varchar(150) NOT NULL,
+    id_cuenta uuid NOT NULL REFERENCES nexomail.tbl_mae_cuentas(id_cuenta) ON DELETE CASCADE,
+    cod_tipo_accion varchar(50) NOT NULL,
+    txt_propuesta jsonb NOT NULL,
+    num_posicion integer NOT NULL DEFAULT 0,
+    est_registro char(1) NOT NULL DEFAULT 'A' CHECK (est_registro IN ('A','I','E')),
+    fec_creacion timestamptz NOT NULL,
+    fec_modificacion timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (id_cuenta, id_propuesta)
+);
+INSERT INTO nexomail.tbl_sis_migraciones(num_version, est_registro) VALUES(2, 'A') ON CONFLICT DO NOTHING;

@@ -260,7 +260,7 @@ Las opciones muestran dos direcciones con botón **Copiar**:
 ### Primer inicio
 1. Abre `mail.google.com` u Outlook web (`outlook.live.com`, `outlook.office.com`, `outlook.office365.com` o `outlook.cloud.microsoft`).
 2. Pulsa la **burbuja** de NexoMail.
-3. Acepta el **aviso de privacidad** (solo la primera vez) y autoriza tu cuenta con Google o Microsoft.
+3. Acepta el **aviso de privacidad**, que se muestra **cada vez que conectas una cuenta** (también tras desconectarla), y autoriza tu cuenta con Google o Microsoft. La última aceptación, con su fecha y la cuenta, aparece en **Ajustes → Privacidad y permisos**.
 
 Sin conectar una cuenta, la app funciona en **modo demostración** con correos de ejemplo.
 
@@ -273,14 +273,30 @@ Sin conectar una cuenta, la app funciona en **modo demostración** con correos d
 - «Recupera de la papelera el correo de Jira»
 - «Etiqueta como Trabajo los correos sin leer del proyecto»
 
+### Sugerencias rápidas
+El botón **Sugerencias** (bombilla junto al clip) ofrece las cinco acciones que más tiempo ahorran:
+
+| Botón | Qué hace | ¿Usa IA? |
+|---|---|---|
+| **Resumen del día** | Sin leer, urgentes, por responder, sospechosos y boletines, en un vistazo | No: se calcula en tu equipo |
+| **Por responder** | Correos de personas con una pregunta o petición para ti | No |
+| **Responder al último** | Prepara la respuesta al último correo de una persona (ignora notificaciones) | Sí, si está configurada; si no, deja un borrador para completar |
+| **Revisar sospechosos** | Lista los correos con señales de phishing o fraude y el motivo | No |
+| **Limpiar promociones** | Propone mover a la papelera promociones y suscripciones | No; requiere tu aprobación |
+
+Los análisis sin IA dan siempre el mismo resultado, no envían tus correos a ningún proveedor y funcionan aunque Gemini esté saturado.
+
 ### Aprobar acciones
-En **Acciones** revisa cada propuesta. Puedes **Editar** el destinatario, el asunto, el mensaje y los adjuntos, **Rechazar** o **Aprobar**.
+En **Acciones** revisa cada propuesta. Puedes **Editar** el destinatario, el asunto, el mensaje y los adjuntos, **Rechazar** o **Aprobar**. En las propuestas con varios correos (limpiar, eliminar, recuperar o etiquetar) puedes **marcar o desmarcar** cada correo antes de aprobar.
 
 - **Enviar** y **mover a la papelera** siempre requieren aprobación.
 - **Etiquetar** también la requiere si activas *Revisión estricta* en Ajustes.
 
 ### Adjuntos
-Se pueden adjuntar archivos desde el chat, al redactar o al editar una propuesta. El límite es de **20 MB** por mensaje en Gmail y **3 MB** en Outlook (límite de Graph para envíos directos). La IA solo ve los **nombres** de los archivos, nunca su contenido.
+Se pueden adjuntar archivos desde el chat, al redactar o al editar una propuesta. El límite es de **20 MB** por mensaje en Gmail y **3 MB** en Outlook (límite de Graph para envíos directos). La IA solo ve los **nombres** de los archivos, nunca su contenido. Las **fotos de más de 1 MB** (JPG, PNG o WebP) se reducen automáticamente a un máximo de 2.000 px en JPEG de buena calidad, para que el correo se envíe mucho más rápido; junto al archivo se ve el cambio, por ejemplo «4,8 MB → 0,7 MB». Los PDF, documentos, GIF y fotos HEIC se envían tal cual.
+
+### Adjuntos recibidos
+Al abrir un correo en **Correo** se listan sus adjuntos con nombre y tamaño. **Nada se descarga hasta que lo pides**: las imágenes (JPG, PNG, GIF, WebP) se pueden **Ver** dentro de la app y cualquier archivo se puede **Descargar**. NexoMail nunca abre ni ejecuta los archivos. Los programas, scripts y documentos con macros llevan un aviso y piden confirmación, igual que cualquier descarga de un correo con señales de riesgo o de más de 15 MB. Los SVG y HTML no se previsualizan porque podrían ejecutar código.
 
 ### Clasificación manual
 En **Correo** puedes asignar una categoría: Trabajo, Personal, Importante, Finanzas o Boletines.
@@ -307,7 +323,7 @@ La categoría manual tiene prioridad sobre la agrupación automática.
 - **Contenido aislado:**
   - El HTML de los correos se muestra en un documento aislado y sin scripts.
   - Las imágenes remotas se bloquean salvo que las permitas.
-  - Los enlaces piden confirmación.
+  - Cada enlace se revisa en tu equipo, sin visitarlo: destino real, texto que aparenta otro dominio, enlaces acortados, direcciones IP, sin HTTPS, dominios que imitan marcas o caracteres engañosos. Los avisos aparecen junto al enlace y en la confirmación para abrirlo. No se consultan listas de sitios maliciosos.
 - **CSP estricta (Manifest V3):** no se carga código remoto y las fuentes van incluidas en el paquete.
 - **Qué recibe la IA:** tu petición y extractos de los correos cargados. Revisa la política del proveedor de IA que uses. Con Ollama, todo se procesa en tu equipo.
 
@@ -329,6 +345,7 @@ Todas las rutas requieren la cabecera `X-EmailAgent-Token`.
 | POST | `/api/gmail/agent/chat` | Consulta al modelo con herramientas. Reintenta ante errores 503 y 529 de saturación. Gmail y Outlook la usan por igual. |
 | GET | `/api/storage/{gmail\|microsoft}/workspace` | Carga el chat, los borradores, las preferencias y el historial de la cuenta |
 | POST | `/api/storage/{provider}/workspace/{section}` | Guarda una sección con control de versiones |
+| GET / POST | `/api/storage/{provider}/proposals` | Lee o reemplaza las propuestas pendientes de la cuenta |
 | POST | `/api/storage/{provider}/audit` | Añade eventos al historial |
 | POST | `/api/storage/{provider}/erase` | Borra todos los datos guardados de la cuenta |
 
@@ -346,11 +363,12 @@ Esquema `nexomail` en PostgreSQL. Se crea con `CONFIGURAR_BASE_DATOS.cmd` a part
 | `tbl_cfg_preferencias_usuario` | Tema, revisión estricta y agrupación automática |
 | `tbl_tra_mensajes_chat` | Mensajes recientes del chat |
 | `tbl_tra_borradores` | Borradores guardados |
+| `tbl_tra_propuestas` | Propuestas pendientes de aprobación (sin adjuntos) |
 | `tbl_tra_versiones_espacio` | Versiones de cada sección, para evitar sobrescrituras |
 | `tbl_aud_eventos` | Historial de auditoría |
 | `tbl_sis_migraciones` | Control de versiones del esquema |
 
-No se guardan correos, tokens ni adjuntos. Las propuestas pendientes no se restauran al recargar, por seguridad.
+No se guardan correos, tokens ni adjuntos. Las propuestas pendientes **sí se recuperan al recargar**, pero solo para la misma cuenta y modo, si tienen menos de 7 días, y marcadas como «Recuperada» para que las revises antes de aprobarlas. Sus adjuntos no se guardan: hay que volver a añadirlos con «Editar».
 
 ---
 
@@ -390,6 +408,7 @@ Implementa la interfaz `MailProvider` de `apps/gmail/src/services/mailProvider.t
 | «Acceso bloqueado» en Google | Añade tu correo como usuario de prueba o publica la app en Google Auth Platform. |
 | Microsoft no termina de conectar | Revisa el Client ID, el tipo de cuenta y la dirección SPA. Algunas organizaciones exigen la aprobación de un administrador. |
 | «No hay conexión» con el servidor | Ejecuta `INICIAR_SERVIDOR.cmd` y comprueba que la clave de enlace coincide con `backend/.env`. |
+| «Gmail limitó temporalmente las peticiones» | Es el límite por minuto de Google para tu cuenta. Espera un minuto: si ocurrió al aprobar, la propuesta sigue en Acciones para aprobarla de nuevo. NexoMail reutiliza los correos ya descargados para gastar poco de ese límite. |
 | Error 503 «high demand» de Gemini | Es saturación temporal de Google. El servidor reintenta y, si sigue fallando, responde el motor de reglas. |
 | No veo los cambios tras actualizar | Ejecuta `RECOMPILAR.cmd`, pulsa **Recargar** en `chrome://extensions` y recarga la pestaña. |
 | Correo «aceptado» pero no recibido | Que el proveedor acepte el envío no garantiza la entrega. Revisa la bandeja de entrada por si hay avisos de rebote. |
@@ -400,6 +419,8 @@ Implementa la interfaz `MailProvider` de `apps/gmail/src/services/mailProvider.t
 ## Limitaciones conocidas
 
 - No está publicada en la Chrome Web Store. Se instala en modo desarrollador.
+- Se cargan los **50 correos más recientes** de cada carpeta por defecto. En **Ajustes → Correos que se cargan** puedes elegir 25, 50 o 100, y en Correo el botón **Cargar más correos** añade 25 cada vez, hasta 200. El asistente analiza los mismos correos cargados (resumen, por responder, sospechosos, limpieza); las búsquedas para eliminar o recuperar un correo concreto consultan todo el buzón.
+- **Memoria del chat:** la IA recuerda los últimos **20 mensajes** (10 preguntas con sus respuestas). Si no caben en el límite de texto (`LLM_CONTEXT_CHARS`, 32.000 caracteres por defecto), se acortan primero los más antiguos; la pregunta actual y el estado de la bandeja siempre van completos. El chat guardado en PostgreSQL conserva hasta 100 mensajes para leerlos.
 - El servidor de IA es local: cada equipo necesita el suyo, o un servicio alojado preparado para varios usuarios.
 - Mientras la app de Google esté en pruebas, solo entran sus usuarios de prueba.
 - Outlook admite como máximo 3 MB de adjuntos por mensaje.

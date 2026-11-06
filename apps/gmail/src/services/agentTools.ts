@@ -1,6 +1,6 @@
 import type { ActionType, AgentStep, Email, PendingAction } from '../types/email';
 import { guardrails } from './guardrails';
-import { describeEmail, isValidEmailAddress } from './mailIntent';
+import { describeEmail, isValidEmailAddress, cleanMessageBody } from './mailIntent';
 
 export const AGENT_TOOL_DEFINITIONS = [
   {
@@ -162,6 +162,8 @@ function timestamp() {
 function isCleanupCandidate(e: Email): boolean {
   return (
     e.category === 'Suscripciones' ||
+    e.category === 'Boletines' ||
+    (!!e.insights?.categories.includes('Boletines') && !(e.manualCategories ?? []).some((name) => name !== 'Boletines')) ||
     e.labels.includes('Spam') ||
     e.labels.includes('Promociones') ||
     e.labels.includes('CATEGORY_PROMOTIONS')
@@ -169,9 +171,10 @@ function isCleanupCandidate(e: Email): boolean {
 }
 
 export function buildInboxContextSummary(emails: Email[], providerSource: string): string {
-  const lines = emails.slice(0, 20).map(
+  // The model sees the 40 newest; local analyses (summary, risks, replies) use all loaded mail.
+  const lines = emails.slice(0, 40).map(
     (e) =>
-      `- id=${e.id} | ${e.read ? 'leído' : 'NO LEÍDO'} | ${e.priority} | ${e.category} | De: ${e.senderName} <${e.sender}> | Asunto: ${e.subject} | Snippet: ${e.snippet.slice(0, 120)}`
+      `- id=${e.id} | ${e.read ? 'leído' : 'NO LEÍDO'} | ${e.priority} | ${e.category} | De: ${e.senderName} <${e.sender}> | Asunto: ${e.subject} | Snippet: ${e.snippet.slice(0, 100)}`
   );
   return `Proveedor: ${providerSource}\nCorreos disponibles (${emails.length}):\n${lines.join('\n')}`;
 }
@@ -294,7 +297,7 @@ export function executeAgentTool(
     case 'prepare_send_email': {
       const recipient = String(args.recipient ?? '');
       let subject = String(args.subject ?? '');
-      const body = String(args.body ?? '');
+      const body = cleanMessageBody(String(args.body ?? ''));
       const replyId = args.reply_to_email_id ? String(args.reply_to_email_id) : undefined;
       const replyEmail = replyId ? ctx.emails.find((e) => e.id === replyId) : undefined;
       if (!isValidEmailAddress(recipient)) {

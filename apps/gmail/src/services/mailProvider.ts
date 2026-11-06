@@ -1,7 +1,7 @@
 import { PLATFORM } from './platform';
 import { realGmailProvider } from './realGmailProvider';
 import { outlookProvider } from './outlookProvider';
-import type { Email, MailFile } from '../types/email';
+import type { Email, MailAttachment, MailFile } from '../types/email';
 
 export { MAX_ATTACHMENT_BYTES } from './platform';
 
@@ -11,7 +11,8 @@ export interface MailProvider {
   getSessionKey(): string;
   accountEmail(): string;
   restoreSession(): Promise<void>;
-  connect(): Promise<void>;
+  /** Gmail can take a Client ID typed in the account dialog; Outlook uses the one in the options. */
+  connect(clientId?: string): Promise<void>;
   disconnect(): Promise<void>;
   storageAccessToken(): Promise<string>;
   /** Gmail search syntax (in:inbox, in:sent, in:trash, is:starred, from:, to:, subject:, {a b} for OR). */
@@ -22,6 +23,9 @@ export interface MailProvider {
   removeLabel(ids: string[], label: string): Promise<void>;
   sendEmail(recipient: string, subject: string, body: string, attachments?: MailFile[]): Promise<void>;
   markAsRead(id: string): Promise<void>;
+  /** Attachments of a message (Outlook asks for them only when the message is opened). */
+  listAttachments(email: Email): Promise<MailAttachment[]>;
+  downloadAttachment(email: Email, attachment: MailAttachment): Promise<Blob>;
 }
 
 export const mailProvider: MailProvider = PLATFORM === 'outlook' ? outlookProvider : realGmailProvider;

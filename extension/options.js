@@ -45,12 +45,14 @@ $('config').addEventListener('submit',async event=>{
   const invalid=validate();
   if(invalid){setNote('status','Revisa los campos marcados.','error');invalid.focus();return;}
   const config={...defaults,...current()};
+  const save=$('save');save.disabled=true;save.textContent='Guardando…';
   try{
     await chrome.storage.local.set({emailagentConfig:config});
     saved=current();markDirty();
     $('microsoftApplication').textContent=config.microsoftClientId || 'sin configurar';
     setNote('status','Guardado. Cierra y vuelve a abrir el panel de NexoMail para aplicarlo.','ok');
   }catch{setNote('status','No se pudo guardar. Vuelve a intentarlo.','error');}
+  finally{save.disabled=false;save.textContent='Guardar cambios';}
 });
 
 $('togglePairing').addEventListener('click',()=>{
@@ -63,14 +65,14 @@ $('togglePairing').addEventListener('click',()=>{
 $('check').addEventListener('click',async()=>{
   const pill=$('serverPill'),button=$('check');
   const state=(value,text)=>{pill.dataset.state=value;$('serverPillText').textContent=text;};
-  button.disabled=true;setNote('serverStatus','Comprobando…');
+  button.disabled=true;button.textContent='Comprobando…';setNote('serverStatus','');
   try{
     const res=await fetch('http://127.0.0.1:8000/api/health',{headers:{'X-EmailAgent-Token':$('pairingToken').value.trim()},signal:AbortSignal.timeout(6000)});
     if(res.ok){state('ok','Conectado');setNote('serverStatus','El servidor responde. Esto no prueba una consulta de IA.','ok');}
     else if(res.status===401){state('error','Clave incorrecta');setNote('serverStatus','La clave de enlace no coincide con la del servidor.','error');}
     else{state('error','Error '+res.status);setNote('serverStatus','El servidor respondió con un error ('+res.status+').','error');}
   }catch{state('error','Sin conexión');setNote('serverStatus','No hay conexión. Ejecuta INICIAR_SERVIDOR.cmd y vuelve a comprobar.','error');}
-  finally{button.disabled=false;}
+  finally{button.disabled=false;button.textContent='Comprobar conexión';}
 });
 
 for(const button of document.querySelectorAll('[data-copy]')){

@@ -1,7 +1,9 @@
-import { useState, useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
-import { Send, Sparkles, ChevronDown, ChevronRight, Mail, Tag, RotateCcw, AlertTriangle, Paperclip, X, FileText, Image as ImageIcon, Reply, ArrowDown, Lightbulb } from 'lucide-react';
+import { useState, useEffect, useLayoutEffect, useRef } from 'react';
+import { Send, Sparkles, ChevronDown, ChevronRight, RotateCcw, AlertTriangle, Paperclip, X, FileText, Image as ImageIcon, ArrowDown, Lightbulb, MessageSquareReply, PenLine, ShieldAlert, Trash2, Loader2 } from 'lucide-react';
 import type { AgentStep, MailFile } from '../types/email';
 import { parseStamp, messageStamp } from '../services/dates';
+import { MessageText } from './MessageText';
+import { formatSize, readMailFile } from '../services/mailFiles';
 import { CHAT_GREETING, QUICK_ACTIONS as SHARED_QUICK_ACTIONS, type QuickActionId } from '@shared/mail/chat-presets';
 import { MAX_ATTACHMENT_BYTES } from '../services/mailProvider';
 import { fetchLlmHealth, type LlmHealth } from '../services/llmClient';
@@ -35,7 +37,7 @@ interface QuickAction {
 }
 
 /** Same requests and greeting as the Outlook chat. */
-const QUICK_ICONS: Record<QuickActionId, React.ComponentType<{ className?: string }>> = { urgent: Sparkles, unread: Mail, reply: Reply, label: Tag };
+const QUICK_ICONS: Record<QuickActionId, React.ComponentType<{ className?: string }>> = { briefing: Sparkles, awaiting: MessageSquareReply, reply: PenLine, risks: ShieldAlert, cleanup: Trash2 };
 const QUICK_ACTIONS: QuickAction[] = SHARED_QUICK_ACTIONS.map(action => ({ icon: QUICK_ICONS[action.id], label: action.label, prompt: action.prompt }));
 
 function formatModelDetails(llmHealth: LlmHealth | null) {
@@ -144,15 +146,6 @@ function describeStep(step: AgentStep): { label: string; text: string; tone: str
   }
 }
 
-/** Renders **bold** and *italic* as React nodes, so message text is never treated as HTML. */
-function inlineMarkdown(line: string): ReactNode[] {
-  return line.split(/(\*\*[^*]+\*\*|\*[^*\s][^*]*\*)/g).map((part, index) => {
-    if (part.startsWith('**') && part.endsWith('**') && part.length > 4) return <strong key={index}>{part.slice(2, -2)}</strong>;
-    if (part.startsWith('*') && part.endsWith('*') && part.length > 2) return <em key={index}>{part.slice(1, -1)}</em>;
-    return part;
-  });
-}
-
 export const AgentChat: React.FC<AgentChatProps> = ({ onSendPrompt, isProcessing, active = true, externalPrompt, onClearHistory, restoredMessages, onHistoryChange }) => {
   const [input, setInput] = useState('');
   const [files, setFiles] = useState<MailFile[]>([]);
@@ -165,15 +158,10 @@ export const AgentChat: React.FC<AgentChatProps> = ({ onSendPrompt, isProcessing
     setFileError('');
     const picked = [...(list ?? [])];
     if (!picked.length) return;
-    const total = filesSize + picked.reduce((sum, file) => sum + file.size, 0);
-    if (total > MAX_ATTACHMENT_BYTES) { setFileError(`Los adjuntos superan ${MAX_ATTACHMENT_LABEL} en total. Quita alguno o envía un enlace.`); return; }
     try {
-      const read = await Promise.all(picked.map(file => new Promise<MailFile>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onerror = () => reject(new Error(file.name));
-        reader.onload = () => resolve({ name: file.name, type: file.type || 'application/octet-stream', size: file.size, data: String(reader.result).split(',')[1] ?? '' });
-        reader.readAsDataURL(file);
-      })));
+      const read = await Promise.all(picked.map(readMailFile));
+      // Checked after reading, so reduced photos count with their new size.
+      if (filesSize + read.reduce((sum, file) => sum + file.size, 0) > MAX_ATTACHMENT_BYTES) { setFileError(`Los adjuntos superan ${MAX_ATTACHMENT_LABEL} en total. Quita alguno o envía un enlace.`); return; }
       setFiles(prev => [...prev, ...read]);
     } catch (error) {
       setFileError(`No se pudo leer ${error instanceof Error ? error.message : 'el archivo'}.`);
@@ -181,7 +169,6 @@ export const AgentChat: React.FC<AgentChatProps> = ({ onSendPrompt, isProcessing
       if (fileInput.current) fileInput.current.value = '';
     }
   };
-  const formatSize = (bytes: number) => bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   const [llmHealth, setLlmHealth] = useState<LlmHealth | null>(null);
   const [expandedSteps, setExpandedSteps] = useState<Record<string, boolean>>({});
 
@@ -304,6 +291,14 @@ export const AgentChat: React.FC<AgentChatProps> = ({ onSendPrompt, isProcessing
       setMessages(prev => [...prev, agentMsg]);
     } catch (err) {
       console.error(err);
+      const reason = err instanceof Error && err.message ? err.message : 'Error desconocido.';
+      setMessages(prev => [...prev, {
+        id: crypto.randomUUID(), created_at: new Date().toISOString(), sender: 'agent',
+        text: `No pude completar la consulta: ${reason}
+
+No se preparó ninguna acción. Vuelve a intentarlo en unos segundos.`,
+        timestamp: new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })
+      }]);
     }
   };
 
@@ -357,13 +352,7 @@ export const AgentChat: React.FC<AgentChatProps> = ({ onSendPrompt, isProcessing
                   </div>
                 )}
 
-                <div className="message-text">
-                  {msg.text.split('\n').map((line, i) => (
-                    <p key={i} className={line.trim() === '' ? 'h-2' : 'mb-1'}>
-                      {inlineMarkdown(line)}
-                    </p>
-                  ))}
-                </div>
+                <MessageText text={msg.text} />
 
                 {(() => { const date = parseStamp(msg.created_at); return date
                   ? <time className="message-time" dateTime={date.toISOString()} title={date.toLocaleString('es-ES', { dateStyle: 'full', timeStyle: 'short' })}>{messageStamp(date)}</time>
@@ -411,7 +400,7 @@ export const AgentChat: React.FC<AgentChatProps> = ({ onSendPrompt, isProcessing
             <span key={index} className="chat-file">
               {file.type.startsWith('image/') ? <ImageIcon aria-hidden="true" /> : <FileText aria-hidden="true" />}
               <span className="chat-file-name">{file.name}</span>
-              <span className="chat-file-size">{formatSize(file.size)}</span>
+              <span className="chat-file-size">{file.originalSize ? <span title="Foto reducida para enviarla más rápido">{formatSize(file.originalSize)} → {formatSize(file.size)}</span> : formatSize(file.size)}</span>
               <button type="button" onClick={() => setFiles(prev => prev.filter((_, i) => i !== index))} aria-label={`Quitar ${file.name}`}><X aria-hidden="true" /></button>
             </span>
           ))}
@@ -477,9 +466,10 @@ export const AgentChat: React.FC<AgentChatProps> = ({ onSendPrompt, isProcessing
           disabled={isProcessing || !input.trim()}
           className="send-button"
           title="Enviar instrucción (Enter)"
-          aria-label="Enviar"
+          aria-label={isProcessing ? 'Procesando tu consulta' : 'Enviar'}
+          aria-busy={isProcessing}
         >
-          <Send className="w-4 h-4" />
+          {isProcessing ? <Loader2 className="w-4 h-4 spin" aria-hidden="true" /> : <Send className="w-4 h-4" />}
         </button>
       </div>
 
