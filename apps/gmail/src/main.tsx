@@ -1,6 +1,7 @@
-import {realGmailProvider} from './services/realGmailProvider';
+import { mailProvider } from './services/mailProvider';
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+import '@fontsource-variable/inter/wght.css'
 import './index.css'
 import App from './App.tsx'
 import {StartupBoundary} from './components/StartupBoundary';
@@ -12,7 +13,7 @@ async function bounded<T>(promise:Promise<T>):Promise<T>{
 }
 async function start(){
   await bounded(window.emailAgentHost.ready);
-  await bounded(realGmailProvider.restoreSession());
+  await bounded(mailProvider.restoreSession());
   createRoot(document.getElementById('root')!).render(<StrictMode><StartupBoundary><App/></StartupBoundary></StrictMode>);
 }
 start().catch(()=>{
@@ -20,10 +21,11 @@ start().catch(()=>{
   if(bridge && window.parent!==window)window.parent.postMessage({type:'EMAILAGENT_APP_ERROR',bridge},location.origin);
   const root=document.getElementById('root')!;
   const card=document.createElement('section');card.className='workspace-card';card.setAttribute('role','alert');
-  const title=document.createElement('h2');title.textContent='No se pudo iniciar Gmail en NexoMail';
-  const text=document.createElement('p');text.textContent='Recarga la pestaña del correo después de actualizar la extensión. Tu autorización de Google permanece guardada.';
+  const title=document.createElement('h2');title.textContent=`No se pudo iniciar ${MAIL} en NexoMail`;
+  const text=document.createElement('p');text.textContent=`Recarga la pestaña del correo después de actualizar la extensión. Tu autorización de ${ACCOUNT} permanece guardada.`;
   const retry=document.createElement('button');retry.className='workspace-button';retry.textContent='Volver a abrir';retry.addEventListener('click',()=>location.reload());
   card.append(title,text,retry);root.replaceChildren(card);
 });
 
 import './outlook-workspace.css'
+import { MAIL, ACCOUNT } from './services/platform';

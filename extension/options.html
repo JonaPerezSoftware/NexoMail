@@ -1,5 +1,138 @@
-<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Configurar NexoMail</title><link rel="stylesheet" href="options.css"></head><body><main><header class="brand-heading"><img src="icons/nexomail.svg" width="58" height="58" alt="Logo de NexoMail"><div><p class="eyebrow">NEXOMAIL · PROYECTO DE TESIS</p><h1>Una conexión. Todo tu correo.</h1></div></header><p>Configura los identificadores públicos de las aplicaciones. La clave de Gemini u Ollama se configura únicamente en el servidor local.</p><form id="config">
-<label>Google OAuth Client ID<input id="googleClientId" autocomplete="off" placeholder="…apps.googleusercontent.com"></label><label>Microsoft Application (client) ID<input id="microsoftClientId" autocomplete="off"></label><label>Tipo de cuenta Microsoft<select id="microsoftTenant"><option value="consumers">Personal: Outlook / Hotmail</option><option value="common">Personales y cualquier organización (recomendado)</option><option value="organizations">Solo organización</option></select></label>
-<label>Clave de enlace con el servidor local<input id="pairingToken" type="password" autocomplete="off" placeholder="Valor EXTENSION_ACCESS_TOKEN del backend/.env"></label><p>La clave de enlace protege el acceso a tu servidor de IA. No es tu clave de Google, Microsoft ni Gemini.</p>
-<button type="submit">Guardar configuración</button><button type="button" id="check">Comprobar servidor</button><p id="status" role="status" aria-live="polite"></p></form>
-<section><h2>Direcciones de retorno OAuth</h2><p>Registra exactamente estas direcciones en las aplicaciones correspondientes:</p><label>Google · cliente de aplicación web<code id="googleRedirect"></code></label><label>Microsoft · plataforma SPA<code id="microsoftRedirect"></code></label><button type="button" id="copyMicrosoftRedirect">Copiar dirección de Microsoft</button><p id="microsoftSetupStatus" role="status" aria-live="polite"></p><details class="microsoft-setup" open><summary>Corregir el error redirect_uri de Microsoft</summary><p>Microsoft debe tener registrada exactamente esta dirección de retorno. Un cambio local no modifica el registro de Microsoft.</p><ol><li>Abre <a href="https://entra.microsoft.com/" target="_blank" rel="noopener noreferrer">Microsoft Entra</a> → Registros de aplicaciones.</li><li>Selecciona la aplicación con este ID de cliente:<code id="microsoftApplication"></code></li><li>En Autenticación, añade la dirección anterior en <strong>Aplicación de página única (SPA)</strong> y guarda.</li><li>Cierra la ventana del error y vuelve a pulsar Conectar Outlook.</li></ol><p>La extensión no utiliza un secreto de cliente para este acceso.</p></details><p>El ID de extensión puede cambiar entre navegadores y al reinstalarla. Si cambia, vuelve a registrar las direcciones mostradas.</p></section><p>Después de guardar, cierra y abre el panel. Cada plataforma solicita su autorización. NexoMail comprueba la cuenta detectada en la página antes de acceder al correo.</p><section class="public-audience"><h2>Acceso para otros usuarios</h2><p>Estas opciones preparan la extensión. No publican la aplicación ni verifican sus permisos en Google o Microsoft.</p><details open><summary>Outlook · cuentas personales e institucionales</summary><ol><li>En Microsoft Entra, abre esta aplicación en Registros de aplicaciones.</li><li>En Tipos de cuenta admitidos, selecciona <strong>Cuentas en cualquier directorio organizativo y cuentas personales de Microsoft</strong>.</li><li>En Autenticación, registra la dirección Microsoft anterior como SPA y guarda.</li><li>En esta extensión, conserva <strong>Personales y cualquier organización</strong>.</li></ol><p>Una institución puede exigir aprobación de su administrador.</p></details><details><summary>Gmail · salir de la lista de usuarios de prueba</summary><ol><li>En Google Auth Platform, configura el público como <strong>Externo</strong>.</li><li>Prepara la publicación en producción y completa la verificación que Google exija para los permisos de Gmail utilizados.</li><li>Conserva el Client ID y la dirección de retorno registrados para la versión distribuida de NexoMail.</li></ol><p>La revisión de Google no se completa con un cambio en el código. Mientras la aplicación esté en pruebas, solo podrán entrar sus usuarios de prueba.</p></details><h3>Gemini es independiente del inicio de sesión</h3><p>La clave de Gemini pertenece al servidor de IA. Cada usuario autoriza su propio correo mediante Google o Microsoft; no necesita configurar Gemini para iniciar sesión.</p><p>Esta instalación utiliza un servidor local. Para distribuirla a otras personas, cada instalación necesita un servidor configurado o un servicio alojado preparado para varios usuarios.</p></section><section class="brand-authors"><h2>Autores</h2><p>Marlon Aguiño · Jonathan Pérez</p><p>NexoMail · Asistente de correo para Gmail y Outlook.</p></section></main><script src="options.js"></script></body></html>
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ajustes de NexoMail</title>
+<link rel="icon" type="image/png" href="icons/icon48.png">
+<link rel="stylesheet" href="options.css">
+</head>
+<body>
+<main>
+  <header class="op-head">
+    <img src="icons/nexomail.svg" width="48" height="48" alt="">
+    <div class="op-title">
+      <h1>Ajustes de NexoMail</h1>
+      <p>Conecta Gmail y Outlook y enlaza la extensión con tu servidor de IA.</p>
+    </div>
+    <span class="op-version" id="version"></span>
+  </header>
+
+  <form id="config" novalidate>
+    <section class="op-group" aria-labelledby="g-server">
+      <div class="op-group-head">
+        <span class="op-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg></span>
+        <div><h2 id="g-server">Servidor de IA local</h2><p>El asistente consulta Gemini u Ollama a través de este servidor. Sus claves de IA se configuran en <code>backend/.env</code>, nunca aquí.</p></div>
+        <span class="op-pill" id="serverPill" data-state="unknown"><span class="op-dot"></span><span id="serverPillText">Sin comprobar</span></span>
+      </div>
+      <div class="op-field">
+        <label for="pairingToken">Clave de enlace</label>
+        <div class="op-inputrow">
+          <input id="pairingToken" type="password" autocomplete="off" spellcheck="false" placeholder="Valor de EXTENSION_ACCESS_TOKEN en backend/.env" aria-describedby="pairingHelp">
+          <button type="button" class="op-btn op-btn-ghost" id="togglePairing" aria-pressed="false">Mostrar</button>
+        </div>
+        <small id="pairingHelp">Protege el acceso a tu servidor. No es tu contraseña de Google, Microsoft ni Gemini.</small>
+      </div>
+      <div class="op-actions">
+        <button type="button" class="op-btn op-btn-secondary" id="check">Comprobar conexión</button>
+        <span class="op-note" id="serverStatus" role="status" aria-live="polite"></span>
+      </div>
+    </section>
+
+    <section class="op-group" aria-labelledby="g-gmail">
+      <div class="op-group-head">
+        <span class="op-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg></span>
+        <div><h2 id="g-gmail">Gmail</h2><p>Se conecta con tu cuenta de Google. Solo necesitas el identificador público de la aplicación.</p></div>
+      </div>
+      <div class="op-field">
+        <label for="googleClientId">Google OAuth Client ID</label>
+        <input id="googleClientId" autocomplete="off" spellcheck="false" placeholder="…apps.googleusercontent.com" aria-describedby="googleHelp">
+        <small id="googleHelp" data-help="Termina en .apps.googleusercontent.com.">Termina en .apps.googleusercontent.com.</small>
+      </div>
+      <div class="op-field">
+        <span class="op-label">Dirección de retorno de Google</span>
+        <div class="op-copy"><code id="googleRedirect"></code><button type="button" class="op-btn op-btn-ghost" data-copy="google">Copiar</button></div>
+        <small>Regístrala en Google Cloud, en el cliente OAuth de tipo aplicación web.</small>
+      </div>
+    </section>
+
+    <section class="op-group" aria-labelledby="g-outlook">
+      <div class="op-group-head">
+        <span class="op-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="8" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/></svg></span>
+        <div><h2 id="g-outlook">Outlook</h2><p>Se conecta con tu cuenta de Microsoft mediante la aplicación registrada en Microsoft Entra.</p></div>
+      </div>
+      <div class="op-field">
+        <label for="microsoftClientId">Application (client) ID</label>
+        <input id="microsoftClientId" autocomplete="off" spellcheck="false" placeholder="00000000-0000-0000-0000-000000000000" aria-describedby="microsoftHelp">
+        <small id="microsoftHelp" data-help="Identificador de aplicación (cliente) de Microsoft Entra, con formato GUID.">Identificador de aplicación (cliente) de Microsoft Entra, con formato GUID.</small>
+      </div>
+      <div class="op-field">
+        <label for="microsoftTenant">Cuentas que pueden entrar</label>
+        <select id="microsoftTenant">
+          <option value="common">Personales y de cualquier organización (recomendado)</option>
+          <option value="consumers">Solo personales: Outlook.com y Hotmail</option>
+          <option value="organizations">Solo de organizaciones</option>
+        </select>
+      </div>
+      <div class="op-field">
+        <span class="op-label">Dirección de retorno de Microsoft</span>
+        <div class="op-copy"><code id="microsoftRedirect"></code><button type="button" class="op-btn op-btn-ghost" data-copy="microsoft">Copiar</button></div>
+        <small>Regístrala como <strong>Aplicación de página única (SPA)</strong>.</small>
+      </div>
+      <details class="op-help">
+        <summary>Microsoft muestra un error de redirect_uri</summary>
+        <ol>
+          <li>Abre <a href="https://entra.microsoft.com/" target="_blank" rel="noopener noreferrer">Microsoft Entra</a> → Registros de aplicaciones.</li>
+          <li>Elige la aplicación <code id="microsoftApplication">sin configurar</code>.</li>
+          <li>En Autenticación, añade la dirección de retorno de arriba en <strong>Aplicación de página única (SPA)</strong> y guarda.</li>
+          <li>Vuelve al correo y pulsa Conectar de nuevo.</li>
+        </ol>
+        <p>No se usa ningún secreto de cliente.</p>
+      </details>
+    </section>
+
+    <div class="op-savebar">
+      <span class="op-note" id="status" role="status" aria-live="polite"></span>
+      <button type="submit" class="op-btn op-btn-primary" id="save">Guardar cambios</button>
+    </div>
+  </form>
+
+  <section class="op-group" aria-labelledby="g-share">
+    <div class="op-group-head">
+      <span class="op-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M3 20c.8-3.5 3.2-5 6-5s5.2 1.5 6 5"/><circle cx="17" cy="9" r="2.5"/><path d="M16.5 14.5c2.3.2 3.8 1.6 4.5 4"/></svg></span>
+      <div><h2 id="g-share">Usarlo con otras cuentas</h2><p>Estos pasos se hacen en Google y Microsoft. Cambiar la extensión no publica ni verifica la aplicación.</p></div>
+    </div>
+    <details class="op-help">
+      <summary>Outlook: cuentas personales e institucionales</summary>
+      <ol>
+        <li>En Microsoft Entra, abre la aplicación en Registros de aplicaciones.</li>
+        <li>En Tipos de cuenta admitidos, elige <strong>cualquier directorio organizativo y cuentas personales de Microsoft</strong>.</li>
+        <li>Registra la dirección de retorno de Microsoft como SPA.</li>
+        <li>Aquí, deja <strong>Personales y de cualquier organización</strong>.</li>
+      </ol>
+      <p>Algunas instituciones exigen que un administrador apruebe la aplicación.</p>
+    </details>
+    <details class="op-help">
+      <summary>Gmail: salir de la lista de usuarios de prueba</summary>
+      <ol>
+        <li>En Google Auth Platform, configura el público como <strong>Externo</strong>.</li>
+        <li>Publica la aplicación en producción y completa la verificación que Google pida para los permisos de Gmail.</li>
+        <li>Mantén el mismo Client ID y la misma dirección de retorno.</li>
+      </ol>
+      <p>Mientras la aplicación esté en pruebas, solo entran sus usuarios de prueba.</p>
+    </details>
+    <details class="op-help">
+      <summary>Servidor de IA para otras personas</summary>
+      <p>Cada persona autoriza su propio correo; no necesita una clave de Gemini para iniciar sesión. Pero el asistente necesita un servidor: esta instalación usa uno local, así que cada equipo necesita el suyo o un servicio alojado preparado para varios usuarios.</p>
+    </details>
+    <p class="op-foot-note">El ID de la extensión cambia al instalarla en otro navegador o al reinstalarla. Si cambia, vuelve a registrar las dos direcciones de retorno.</p>
+  </section>
+
+  <footer class="op-footer">
+    <a href="privacy.html" target="_blank" rel="noopener">Privacidad y permisos</a>
+    <span>Proyecto de tesis · Marlon Aguiño y Jonathan Pérez</span>
+  </footer>
+</main>
+<script src="options.js"></script>
+</body>
+</html>

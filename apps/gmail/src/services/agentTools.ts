@@ -1,5 +1,6 @@
 import type { ActionType, AgentStep, Email, PendingAction } from '../types/email';
 import { guardrails } from './guardrails';
+import { describeEmail, isValidEmailAddress } from './mailIntent';
 
 export const AGENT_TOOL_DEFINITIONS = [
   {
@@ -66,16 +67,49 @@ export const AGENT_TOOL_DEFINITIONS = [
   {
     type: 'function',
     function: {
-      name: 'prepare_bulk_cleanup',
+      name: 'prepare_delete_emails',
       description:
-        'Prepara mover a papelera correos de promociones/spam/suscripciones. Requiere aprobación.',
+        'Prepara mover a papelera los correos concretos que el usuario nombró. Usa los ids del contexto. NO envía nada y requiere aprobación.',
       parameters: {
         type: 'object',
         properties: {
           email_ids: {
             type: 'array',
             items: { type: 'string' },
-            description: 'Ids de correos a eliminar. Si vacío, el sistema elige candidatos obvios.',
+            description: 'Ids exactos de los correos a mover a la papelera.',
+          },
+        },
+        required: ['email_ids'],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'prepare_restore_emails',
+      description: 'Prepara devolver a la bandeja de entrada correos que están en la papelera. Requiere aprobación.',
+      parameters: {
+        type: 'object',
+        properties: { email_ids: { type: 'array', items: { type: 'string' } } },
+        required: ['email_ids'],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'prepare_bulk_cleanup',
+      description:
+        'Solo para limpieza general de promociones/spam/suscripciones. Para un correo concreto usa prepare_delete_emails. Requiere aprobación.',
+      parameters: {
+        type: 'object',
+        properties: {
+          email_ids: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Ids de correos a eliminar. Si vacío, el sistema elige solo promociones, spam y suscripciones.',
           },
         },
         additionalProperties: false,
@@ -263,6 +297,25 @@ export function executeAgentTool(
       const body = String(args.body ?? '');
       const replyId = args.reply_to_email_id ? String(args.reply_to_email_id) : undefined;
       const replyEmail = replyId ? ctx.emails.find((e) => e.id === replyId) : undefined;
+      if (!isValidEmailAddress(recipient)) {
+        steps.push({
+          type: 'GUARDRAIL_CHECK',
+          message: 'prepare_send_email → BLOQUEADO (destinatario no válido)',
+          timestamp: timestamp(),
+        });
+        return {
+          content: JSON.stringify({ error: 'INVALID_RECIPIENT', detail: 'Pide al usuario un destinatario válido.' }),
+          pendingActions,
+          steps,
+        };
+      }
+      if (replyId && !replyEmail) {
+        return {
+          content: JSON.stringify({ error: 'EMAIL_NOT_FOUND', email_id: replyId }),
+          pendingActions,
+          steps,
+        };
+      }
       if (replyEmail && !subject.toLowerCase().startsWith('re:')) {
         subject = `Re: ${replyEmail.subject}`;
       }
@@ -312,15 +365,108 @@ export function executeAgentTool(
       };
     }
 
-    case 'prepare_bulk_cleanup': {
-      let ids = Array.isArray(args.email_ids)
-        ? (args.email_ids as string[]).filter(Boolean)
+    case 'prepare_delete_emails': {
+      const ids = Array.isArray(args.email_ids)
+        ? [...new Set((args.email_ids as unknown[]).filter((id): id is string => typeof id === 'string' && id.length > 0))]
         : [];
+      const targets = ctx.emails.filter((e) => ids.includes(e.id));
+      if (ids.length === 0 || targets.length !== ids.length) {
+        steps.push({
+          type: 'GUARDRAIL_CHECK',
+          message: 'prepare_delete_emails → BLOQUEADO (ids ausentes o desconocidos)',
+          timestamp: timestamp(),
+        });
+        return {
+          content: JSON.stringify({ error: 'EMAIL_NOT_FOUND', email_ids: ids, detail: 'Usa solo ids del contexto o pregunta qué correo eliminar.' }),
+          pendingActions,
+          steps,
+        };
+      }
+
+      steps.push({
+        type: 'GUARDRAIL_CHECK',
+        message: `prepare_delete_emails → REQUIRES_APPROVAL (${targets.length} correo(s))`,
+        timestamp: timestamp(),
+      });
+      const pending = guardrails.createPendingAction(
+        'DELETE_EMAIL',
+        targets.length === 1 ? `Eliminar: ${targets[0].subject}` : `Eliminar ${targets.length} correos`,
+        targets.map(describeEmail).join(' · '),
+        { emailIds: ids, reason: 'Eliminación solicitada por el usuario', isReal: ctx.isReal, sessionKey: ctx.sessionKey },
+        'Acción destructiva: mover a papelera tras tu aprobación.'
+      );
+      pendingActions.push(pending);
+      steps.push({
+        type: 'ACTION_CREATED',
+        message: `Acción ${pending.id} creada para eliminar ${targets.length} correo(s)`,
+        timestamp: timestamp(),
+      });
+      return {
+        content: JSON.stringify({
+          status: 'PENDING_APPROVAL',
+          action_id: pending.id,
+          count: targets.length,
+          email_ids: ids,
+          subjects: targets.map((t) => t.subject),
+        }),
+        pendingActions,
+        steps,
+      };
+    }
+
+    case 'prepare_restore_emails': {
+      const ids = Array.isArray(args.email_ids)
+        ? [...new Set((args.email_ids as unknown[]).filter((id): id is string => typeof id === 'string' && id.length > 0))]
+        : [];
+      const targets = ctx.emails.filter((e) => ids.includes(e.id));
+      if (ids.length === 0 || targets.length !== ids.length) {
+        return {
+          content: JSON.stringify({ error: 'EMAIL_NOT_FOUND', email_ids: ids, detail: 'Usa solo ids de correos de la papelera.' }),
+          pendingActions,
+          steps,
+        };
+      }
+      steps.push({ type: 'GUARDRAIL_CHECK', message: `prepare_restore_emails → REQUIRES_APPROVAL (${targets.length} correo(s))`, timestamp: timestamp() });
+      const pending = guardrails.createPendingAction(
+        'RESTORE_EMAIL',
+        targets.length === 1 ? `Recuperar: ${targets[0].subject}` : `Recuperar ${targets.length} correos`,
+        targets.map(describeEmail).join(' · '),
+        { emailIds: ids, reason: 'Recuperación solicitada por el usuario', isReal: ctx.isReal, sessionKey: ctx.sessionKey },
+        'Vuelve a la bandeja de entrada tras tu aprobación.'
+      );
+      pendingActions.push(pending);
+      steps.push({ type: 'ACTION_CREATED', message: `Acción ${pending.id} creada para recuperar ${targets.length} correo(s)`, timestamp: timestamp() });
+      return {
+        content: JSON.stringify({ status: 'PENDING_APPROVAL', action_id: pending.id, count: targets.length, email_ids: ids }),
+        pendingActions,
+        steps,
+      };
+    }
+
+    case 'prepare_bulk_cleanup': {
+      const requested = Array.isArray(args.email_ids)
+        ? (args.email_ids as unknown[]).filter((id): id is string => typeof id === 'string' && id.length > 0)
+        : [];
+      const unknownIds = requested.filter((id) => !ctx.emails.some((e) => e.id === id));
+      if (unknownIds.length > 0) {
+        return {
+          content: JSON.stringify({ error: 'EMAIL_NOT_FOUND', email_ids: unknownIds }),
+          pendingActions,
+          steps,
+        };
+      }
+      const ids = requested.length > 0 ? requested : ctx.emails.filter(isCleanupCandidate).map((e) => e.id);
       if (ids.length === 0) {
-        ids = ctx.emails.filter(isCleanupCandidate).map((e) => e.id);
-        if (ids.length === 0) {
-          ids = ctx.emails.slice(0, 2).map((e) => e.id);
-        }
+        steps.push({
+          type: 'GUARDRAIL_CHECK',
+          message: 'prepare_bulk_cleanup → sin candidatos; no se propone nada',
+          timestamp: timestamp(),
+        });
+        return {
+          content: JSON.stringify({ status: 'NO_CANDIDATES', count: 0 }),
+          pendingActions,
+          steps,
+        };
       }
       const targets = ctx.emails.filter((e) => ids.includes(e.id));
 

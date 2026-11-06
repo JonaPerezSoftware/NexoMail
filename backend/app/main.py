@@ -10,7 +10,6 @@ from fastapi.responses import JSONResponse
 
 from app.core.config import settings
 from app.api.health import router as health_router
-from app.api.agent import router as agent_router
 from app.api.storage import router as storage_router
 
 # Configuración básica de logging
@@ -61,7 +60,6 @@ async def global_exception_handler(request: Request, exc: Exception):
 # Inclusión de enrutadores con prefijo /api
 app.include_router(gmail_router, prefix=settings.API_PREFIX)
 app.include_router(health_router, prefix=settings.API_PREFIX)
-app.include_router(agent_router, prefix=settings.API_PREFIX)
 app.include_router(storage_router, prefix=settings.API_PREFIX)
 
 

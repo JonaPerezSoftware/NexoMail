@@ -145,6 +145,18 @@ export class MockEmailService {
     });
   }
 
+  public restoreEmails(ids: string[]): void {
+    this.emails.forEach(e => {
+      if (ids.includes(e.id)) e.trashed = false;
+    });
+  }
+
+  public removeLabel(ids: string[], label: string): void {
+    this.emails.forEach(e => {
+      if (ids.includes(e.id)) e.labels = e.labels.filter(l => l !== label);
+    });
+  }
+
   public labelEmails(ids: string[], label: string): void {
     this.emails.forEach(e => {
       if (ids.includes(e.id) && !e.labels.includes(label)) {

@@ -1,63 +1,84 @@
 -- NexoMail: migration 001. Execute with nexomail_app, not postgres.
-CREATE TABLE IF NOT EXISTS nexomail.schema_migrations (
-    version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now()
+CREATE TABLE IF NOT EXISTS nexomail.tbl_sis_migraciones (
+    num_version integer PRIMARY KEY,
+    fec_aplicacion timestamptz NOT NULL DEFAULT now(),
+    est_registro char(1) NOT NULL DEFAULT 'A' CHECK (est_registro IN ('A','I','E'))
 );
-CREATE TABLE IF NOT EXISTS nexomail.accounts (
-    id uuid PRIMARY KEY,
-    provider text NOT NULL CHECK(provider IN ('gmail','microsoft')),
-    provider_subject text NOT NULL,
-    email text NOT NULL,
-    display_name text NOT NULL DEFAULT '',
-    created_at timestamptz NOT NULL DEFAULT now(),
-    last_seen_at timestamptz NOT NULL DEFAULT now(),
-    UNIQUE(provider,provider_subject)
+
+CREATE TABLE IF NOT EXISTS nexomail.tbl_mae_cuentas (
+    id_cuenta uuid PRIMARY KEY,
+    cod_proveedor varchar(20) NOT NULL CHECK (cod_proveedor IN ('gmail','microsoft')),
+    cod_sujeto_proveedor varchar(128) NOT NULL,
+    txt_correo varchar(255) NOT NULL,
+    nom_usuario varchar(150) NOT NULL DEFAULT '',
+    fec_ultimo_acceso timestamptz NOT NULL DEFAULT now(),
+    est_registro char(1) NOT NULL DEFAULT 'A' CHECK (est_registro IN ('A','I','E')),
+    fec_creacion timestamptz NOT NULL DEFAULT now(),
+    fec_modificacion timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT uq_cuenta_proveedor UNIQUE (cod_proveedor, cod_sujeto_proveedor)
 );
-CREATE TABLE IF NOT EXISTS nexomail.workspace_versions (
-    account_id uuid NOT NULL REFERENCES nexomail.accounts(id) ON DELETE CASCADE,
-    section text NOT NULL CHECK(section IN ('chat','drafts','preferences')),
-    revision integer NOT NULL DEFAULT 0 CHECK(revision>=0),
-    updated_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY(account_id,section)
+
+CREATE TABLE IF NOT EXISTS nexomail.tbl_cfg_preferencias_usuario (
+    id_cuenta uuid PRIMARY KEY REFERENCES nexomail.tbl_mae_cuentas(id_cuenta) ON DELETE CASCADE,
+    cod_tema varchar(10) NOT NULL DEFAULT 'light' CHECK (cod_tema IN ('light','dark')),
+    ind_modo_estricto boolean NOT NULL DEFAULT true,
+    ind_ia_habilitada boolean NOT NULL DEFAULT true,
+    ind_agrupacion_automatica boolean NOT NULL DEFAULT true,
+    est_registro char(1) NOT NULL DEFAULT 'A' CHECK (est_registro IN ('A','I','E')),
+    fec_creacion timestamptz NOT NULL DEFAULT now(),
+    fec_modificacion timestamptz NOT NULL DEFAULT now()
 );
-CREATE TABLE IF NOT EXISTS nexomail.chat_messages (
-    account_id uuid NOT NULL REFERENCES nexomail.accounts(id) ON DELETE CASCADE,
-    message_id text NOT NULL,
-    role text NOT NULL CHECK(role IN ('user','assistant')),
-    content text NOT NULL,
-    created_at timestamptz NOT NULL,
-    position integer NOT NULL,
-    PRIMARY KEY(account_id,message_id)
+
+CREATE TABLE IF NOT EXISTS nexomail.tbl_tra_mensajes_chat (
+    id_mensaje varchar(64) NOT NULL,
+    id_cuenta uuid NOT NULL REFERENCES nexomail.tbl_mae_cuentas(id_cuenta) ON DELETE CASCADE,
+    cod_rol varchar(20) NOT NULL CHECK (cod_rol IN ('user','assistant')),
+    txt_contenido text NOT NULL,
+    num_posicion integer NOT NULL,
+    est_registro char(1) NOT NULL DEFAULT 'A' CHECK (est_registro IN ('A','I','E')),
+    fec_creacion timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (id_cuenta, id_mensaje)
 );
-CREATE TABLE IF NOT EXISTS nexomail.mail_drafts (
-    account_id uuid NOT NULL REFERENCES nexomail.accounts(id) ON DELETE CASCADE,
-    draft_id text NOT NULL,
-    recipient text NOT NULL DEFAULT '', cc text NOT NULL DEFAULT '', bcc text NOT NULL DEFAULT '',
-    subject text NOT NULL DEFAULT '', body text NOT NULL DEFAULT '',
-    reply_to_id text,
-    attachments_omitted boolean NOT NULL DEFAULT false,
-    created_at timestamptz NOT NULL,
-    updated_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY(account_id,draft_id)
+
+CREATE TABLE IF NOT EXISTS nexomail.tbl_tra_borradores (
+    id_borrador varchar(64) NOT NULL,
+    id_cuenta uuid NOT NULL REFERENCES nexomail.tbl_mae_cuentas(id_cuenta) ON DELETE CASCADE,
+    txt_destinatario text NOT NULL DEFAULT '',
+    txt_cc text NOT NULL DEFAULT '',
+    txt_bcc text NOT NULL DEFAULT '',
+    txt_asunto text NOT NULL DEFAULT '',
+    txt_cuerpo text NOT NULL DEFAULT '',
+    id_referencia_respuesta varchar(128),
+    ind_adjuntos_omitidos boolean NOT NULL DEFAULT false,
+    est_registro char(1) NOT NULL DEFAULT 'A' CHECK (est_registro IN ('A','I','E')),
+    fec_creacion timestamptz NOT NULL,
+    fec_modificacion timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (id_cuenta, id_borrador)
 );
-CREATE TABLE IF NOT EXISTS nexomail.user_preferences (
-    account_id uuid PRIMARY KEY REFERENCES nexomail.accounts(id) ON DELETE CASCADE,
-    theme text NOT NULL CHECK(theme IN ('light','dark')),
-    strict_mode boolean NOT NULL DEFAULT true,
-    llm_enabled boolean NOT NULL DEFAULT true,
-    auto_grouping boolean NOT NULL DEFAULT true
+
+CREATE TABLE IF NOT EXISTS nexomail.tbl_tra_versiones_espacio (
+    id_cuenta uuid NOT NULL REFERENCES nexomail.tbl_mae_cuentas(id_cuenta) ON DELETE CASCADE,
+    cod_seccion varchar(30) NOT NULL CHECK (cod_seccion IN ('chat','drafts','preferences')),
+    num_revision integer NOT NULL DEFAULT 0 CHECK (num_revision >= 0),
+    est_registro char(1) NOT NULL DEFAULT 'A' CHECK (est_registro IN ('A','I','E')),
+    fec_modificacion timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (id_cuenta, cod_seccion)
 );
-CREATE TABLE IF NOT EXISTS nexomail.audit_events (
-    account_id uuid NOT NULL REFERENCES nexomail.accounts(id) ON DELETE CASCADE,
-    event_id text NOT NULL,
-    action_type text NOT NULL,
-    status text NOT NULL,
-    description text NOT NULL DEFAULT '',
-    details text NOT NULL DEFAULT '',
-    occurred_at timestamptz NOT NULL,
-    recorded_at timestamptz NOT NULL DEFAULT now(),
-    source text NOT NULL DEFAULT 'extension_client' CHECK(source='extension_client'),
-    PRIMARY KEY(account_id,event_id)
+
+CREATE TABLE IF NOT EXISTS nexomail.tbl_aud_eventos (
+    id_evento varchar(64) NOT NULL,
+    id_cuenta uuid NOT NULL REFERENCES nexomail.tbl_mae_cuentas(id_cuenta) ON DELETE CASCADE,
+    cod_tipo_accion varchar(50) NOT NULL,
+    cod_estado_accion varchar(30) NOT NULL,
+    des_evento text NOT NULL DEFAULT '',
+    txt_detalles text NOT NULL DEFAULT '',
+    fec_ocurrencia timestamptz NOT NULL,
+    fec_registro timestamptz NOT NULL DEFAULT now(),
+    cod_fuente varchar(30) NOT NULL DEFAULT 'extension_client',
+    est_registro char(1) NOT NULL DEFAULT 'A' CHECK (est_registro IN ('A','I','E')),
+    PRIMARY KEY (id_cuenta, id_evento)
 );
-CREATE INDEX IF NOT EXISTS audit_account_time ON nexomail.audit_events(account_id,occurred_at DESC);
-CREATE INDEX IF NOT EXISTS chat_account_order ON nexomail.chat_messages(account_id,position);
-INSERT INTO nexomail.schema_migrations(version) VALUES(1) ON CONFLICT DO NOTHING;
+
+CREATE INDEX IF NOT EXISTS idx_aud_cuenta_fecha ON nexomail.tbl_aud_eventos(id_cuenta, fec_ocurrencia DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_cuenta_pos ON nexomail.tbl_tra_mensajes_chat(id_cuenta, num_posicion ASC);
+INSERT INTO nexomail.tbl_sis_migraciones(num_version, est_registro) VALUES(1, 'A') ON CONFLICT DO NOTHING;

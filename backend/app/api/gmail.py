@@ -1,12 +1,13 @@
 """Adaptador para las herramientas de Gmail. Solo genera propuestas; no recibe tokens de correo."""
 import json
-from urllib.request import Request, urlopen
+from urllib.request import Request
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 from app.core.config import settings
+from app.services.llm_retry import urlopen_with_retry
 
 router=APIRouter(prefix='/gmail/agent',tags=['Gmail'])
 class GmailChat(BaseModel):
@@ -52,7 +53,7 @@ def complete(request:GmailChat):
     if tools:payload.update(tools=tools,tool_choice='auto')
     req=Request(url,data=json.dumps(payload).encode(),headers={'Content-Type':'application/json','Authorization':'Bearer '+key})
     try:
-        with urlopen(req,timeout=60) as response:data=json.loads(response.read(2000000))
+        with urlopen_with_retry(req,timeout=60) as response:data=json.loads(response.read(2000000))
         message=data.get('choices',[{}])[0].get('message')
         if not isinstance(message,dict):raise HTTPException(502,'El proveedor no devolvió una respuesta válida.')
         for call in message.get('tool_calls') or []:

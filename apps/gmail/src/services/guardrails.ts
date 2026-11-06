@@ -1,4 +1,4 @@
-import {realGmailProvider} from './realGmailProvider';
+import { mailProvider } from './mailProvider';
 import type { ActionType, SafetyLevel, PendingAction } from '../types/email';
 
 export interface GuardrailPolicy {
@@ -59,6 +59,13 @@ export const GUARDRAIL_POLICIES: Record<ActionType, GuardrailPolicy> = {
     requiresHumanConfirmation: true,
     explanationPattern: 'ACCION DESTRUCTIVA: Movimiento a la papelera / eliminación de correos.',
   },
+  RESTORE_EMAIL: {
+    actionType: 'RESTORE_EMAIL',
+    safetyLevel: 'REQUIRES_APPROVAL',
+    impactScore: 'Bajo',
+    requiresHumanConfirmation: true,
+    explanationPattern: 'Devuelve correos de la papelera a la bandeja de entrada. Es reversible.',
+  },
   BULK_CLEANUP: {
     actionType: 'BULK_CLEANUP',
     safetyLevel: 'REQUIRES_APPROVAL',
@@ -113,7 +120,7 @@ export class GuardrailsService {
       description,
       safetyLevel: policy.safetyLevel,
       impactScore: policy.impactScore,
-      payload: {...payload,isReal:payload.isReal ?? realGmailProvider.isConnected(),sessionKey:payload.sessionKey ?? realGmailProvider.getSessionKey()},
+      payload: {...payload,isReal:payload.isReal ?? mailProvider.isConnected(),sessionKey:payload.sessionKey ?? mailProvider.getSessionKey()},
       status: 'PENDING',
       createdAt: new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
       aiExplanation: customExplanation || policy.explanationPattern

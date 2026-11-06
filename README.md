@@ -1,3 +1,7 @@
+## NexoMail 1.9.0
+
+Lector con formato en Gmail y Outlook: conserva HTML, tablas y estilos en un documento aislado, con opción de mostrar imágenes HTTPS por mensaje y alternar a texto. Los enlaces se consultan y abren con confirmación fuera del documento. Consulta extension/LECTOR_DE_CORREOS.md.
+
 ## NexoMail 1.8.2
 
 Conectar Gmail y Reautorizar con Google abren directamente el flujo de Google con el cliente configurado en la extensión. La configuración de la aplicación sigue accesible desde Configuración. Google decide las pantallas de selección, aviso y consentimiento que corresponden. Compilación comprobada; autorización real pendiente de comprobación en el navegador.
@@ -18,13 +22,13 @@ Integración de los dos proyectos de tesis en una extensión Manifest V3 para Ch
 
 - Detección de Gmail y Outlook según la dirección de la pestaña.
 - Botón EmailAgent dentro de los sitios compatibles y acceso desde el icono de la extensión.
-- Chat flotante con la aplicación de Gmail o la de Outlook. El botón **Ampliar** abre el mismo módulo en una pestaña de la extensión.
-- Aplicaciones React y Angular compiladas dentro de la extensión, sin ejecutar un servidor de desarrollo para las interfaces.
+- Chat flotante con la misma interfaz para Gmail y Outlook. El botón **Ampliar** abre el mismo módulo en una pestaña de la extensión.
+- Una sola aplicación React (`apps/gmail`) compilada dos veces dentro de la extensión: una con la API de Gmail y otra con Microsoft Graph.
 - Un único servidor local de IA en `127.0.0.1:8000` para ambos asistentes.
 - Autorización Google independiente de Microsoft, propuestas revisables y sesiones separadas.
 - Configuración pública desde las opciones de la extensión. Las claves del proveedor de IA se guardan solo en `backend/.env`.
 
-Se incorpora PostgreSQL local opcional para guardar chat, borradores, preferencias y auditoría por cuenta. Los proyectos originales no se modificaron. Se conservan sus módulos y se integran mediante un contenedor y adaptadores; no se reescriben React y Angular como un único framework.
+Se incorpora PostgreSQL local opcional para guardar chat, borradores, preferencias y auditoría por cuenta. La antigua interfaz Angular de Outlook se sustituyó por la interfaz React, que habla con Outlook mediante un adaptador de Microsoft Graph (`apps/gmail/src/services/outlookProvider.ts`).
 
 ## 1. Cargar la extensión ya compilada
 
@@ -105,7 +109,7 @@ Dentro de la ventana puedes cambiar entre **Chat, Correo, Acciones, Historial y 
 
 ## Estado de la entrega
 
-Se incluyen las dos interfaces compiladas. Se completaron las compilaciones TypeScript/Vite y Angular de producción. Las advertencias de tamaño de Angular y el selector Bootstrap omitido se documentan en `docs/ARQUITECTURA.md`.
+Se incluyen las dos versiones compiladas (Gmail y Outlook) de la misma interfaz React. `RECOMPILAR.cmd` instala las dependencias y ejecuta `scripts/build.mjs`.
 
 **Pendiente de comprobación en el navegador del usuario:** instalación como extensión, autorización real de Google y Microsoft con sus URI registrados, consultas de IA con su configuración y acciones reales de correo. No se han enviado correos ni accedido a sus cuentas durante esta integración. No se considera una versión publicada ni validada por Chrome Web Store.
 

@@ -1,4 +1,4 @@
-import type { MailInsights } from '../services/mail-insights';
+import type { MailInsights } from '@shared/mail/mail-insights';
 
 export function MailSafety({report}:{report:MailInsights}) {
   return <section className={`mail-safety ${report.level}`} aria-label="Análisis de seguridad del correo">

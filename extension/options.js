@@ -1,6 +1,85 @@
-const fields=['googleClientId','microsoftClientId','microsoftTenant','pairingToken'];let defaults;
-async function init(){const {loadConfiguration}=await import('./configuration.js');defaults=await loadConfiguration();const saved={};for(const key of fields)document.getElementById(key).value=saved[key] ?? defaults[key] ?? '';document.getElementById('googleRedirect').textContent=chrome.identity.getRedirectURL('google');document.getElementById('microsoftRedirect').textContent=chrome.identity.getRedirectURL('microsoft');document.getElementById('microsoftApplication').textContent=document.getElementById('microsoftClientId').value;}
-document.getElementById('config').addEventListener('submit',async event=>{event.preventDefault();const config={...defaults};for(const key of fields)config[key]=document.getElementById(key).value.trim();if(config.googleClientId && !config.googleClientId.endsWith('.apps.googleusercontent.com')){document.getElementById('status').textContent='Revisa el Client ID de Google.';return;}if(config.microsoftClientId && !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(config.microsoftClientId)){document.getElementById('status').textContent='El ID de Microsoft debe ser el identificador de aplicación (cliente), con formato de GUID.';return;}await chrome.storage.local.set({emailagentConfig:config});document.getElementById('microsoftApplication').textContent=config.microsoftClientId;document.getElementById('status').textContent='Configuración guardada. Cierra y vuelve a abrir el panel.';});
-document.getElementById('check').addEventListener('click',async()=>{const status=document.getElementById('status');status.textContent='Comprobando…';try{const res=await fetch('http://127.0.0.1:8000/api/health',{headers:{'X-EmailAgent-Token':document.getElementById('pairingToken').value.trim()},signal:AbortSignal.timeout(6000)});status.textContent=res.ok?'Servidor disponible. Esto no comprueba una consulta de IA.':res.status===401?'La clave de enlace no coincide.':'El servidor respondió con un error: '+res.status;}catch{status.textContent='No hay conexión. Ejecuta INICIAR_SERVIDOR.cmd.';}});init().catch(()=>{document.getElementById('status').textContent='No se pudo cargar la configuración.';});
+// Theme: the same choice the NexoMail app stores (same extension origin).
+try{const theme=localStorage.getItem('theme');if(theme==='light'||theme==='dark')document.documentElement.setAttribute('data-theme',theme);}catch{}
 
-document.getElementById('copyMicrosoftRedirect').addEventListener('click',async()=>{const status=document.getElementById('microsoftSetupStatus');try{await navigator.clipboard.writeText(chrome.identity.getRedirectURL('microsoft'));status.textContent='Dirección copiada. Regístrala como SPA en Microsoft Entra y guarda el cambio.';}catch{status.textContent='Selecciona y copia manualmente la dirección que aparece arriba.';}});
+const fields=['googleClientId','microsoftClientId','microsoftTenant','pairingToken'];
+const $=id=>document.getElementById(id);
+const GUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+let defaults,saved={};
+
+function setNote(id,text,tone){const el=$(id);el.textContent=text;if(tone)el.dataset.tone=tone;else delete el.dataset.tone;}
+function current(){const value={};for(const key of fields)value[key]=$(key).value.trim();return value;}
+function markDirty(){const now=current();const dirty=fields.some(key=>now[key]!==(saved[key] ?? ''));const bar=document.querySelector('.op-savebar');if(dirty){bar.dataset.dirty='';setNote('status','');}else delete bar.dataset.dirty;}
+
+/** Shows the problem under the field instead of a single message at the bottom. */
+function validate(){
+  const checks=[
+    ['googleClientId','googleHelp',v=>!v || v.endsWith('.apps.googleusercontent.com'),'Este Client ID no termina en .apps.googleusercontent.com.'],
+    ['microsoftClientId','microsoftHelp',v=>!v || GUID.test(v),'Debe tener formato GUID, por ejemplo 8e0d59dc-8a0f-4239-bab3-c82a0c145ac4.'],
+  ];
+  let firstInvalid=null;
+  for(const [field,help,ok,message] of checks){
+    const input=$(field),note=$(help),valid=ok(input.value.trim());
+    input.setAttribute('aria-invalid',String(!valid));
+    if(valid){note.textContent=note.dataset.help;delete note.dataset.invalid;}
+    else{note.textContent=message;note.dataset.invalid='';firstInvalid??=input;}
+  }
+  return firstInvalid;
+}
+
+async function init(){
+  $('version').textContent='v'+chrome.runtime.getManifest().version;
+  $('googleRedirect').textContent=chrome.identity.getRedirectURL('google');
+  $('microsoftRedirect').textContent=chrome.identity.getRedirectURL('microsoft');
+  const {loadConfiguration}=await import('./configuration.js');
+  defaults=await loadConfiguration();
+  for(const key of fields){$(key).value=defaults[key] ?? '';saved[key]=$(key).value.trim();}
+  $('microsoftApplication').textContent=saved.microsoftClientId || 'sin configurar';
+}
+
+$('config').addEventListener('input',()=>{markDirty();});
+$('config').addEventListener('change',markDirty);
+for(const id of ['googleClientId','microsoftClientId'])$(id).addEventListener('blur',validate);
+
+$('config').addEventListener('submit',async event=>{
+  event.preventDefault();
+  const invalid=validate();
+  if(invalid){setNote('status','Revisa los campos marcados.','error');invalid.focus();return;}
+  const config={...defaults,...current()};
+  try{
+    await chrome.storage.local.set({emailagentConfig:config});
+    saved=current();markDirty();
+    $('microsoftApplication').textContent=config.microsoftClientId || 'sin configurar';
+    setNote('status','Guardado. Cierra y vuelve a abrir el panel de NexoMail para aplicarlo.','ok');
+  }catch{setNote('status','No se pudo guardar. Vuelve a intentarlo.','error');}
+});
+
+$('togglePairing').addEventListener('click',()=>{
+  const input=$('pairingToken'),show=input.type==='password';
+  input.type=show?'text':'password';
+  $('togglePairing').textContent=show?'Ocultar':'Mostrar';
+  $('togglePairing').setAttribute('aria-pressed',String(show));
+});
+
+$('check').addEventListener('click',async()=>{
+  const pill=$('serverPill'),button=$('check');
+  const state=(value,text)=>{pill.dataset.state=value;$('serverPillText').textContent=text;};
+  button.disabled=true;setNote('serverStatus','Comprobando…');
+  try{
+    const res=await fetch('http://127.0.0.1:8000/api/health',{headers:{'X-EmailAgent-Token':$('pairingToken').value.trim()},signal:AbortSignal.timeout(6000)});
+    if(res.ok){state('ok','Conectado');setNote('serverStatus','El servidor responde. Esto no prueba una consulta de IA.','ok');}
+    else if(res.status===401){state('error','Clave incorrecta');setNote('serverStatus','La clave de enlace no coincide con la del servidor.','error');}
+    else{state('error','Error '+res.status);setNote('serverStatus','El servidor respondió con un error ('+res.status+').','error');}
+  }catch{state('error','Sin conexión');setNote('serverStatus','No hay conexión. Ejecuta INICIAR_SERVIDOR.cmd y vuelve a comprobar.','error');}
+  finally{button.disabled=false;}
+});
+
+for(const button of document.querySelectorAll('[data-copy]')){
+  button.addEventListener('click',async()=>{
+    const text=chrome.identity.getRedirectURL(button.dataset.copy);
+    try{await navigator.clipboard.writeText(text);button.textContent='Copiada';}
+    catch{button.textContent='Cópiala a mano';}
+    setTimeout(()=>{button.textContent='Copiar';},2000);
+  });
+}
+
+init().catch(()=>setNote('status','No se pudo cargar la configuración.','error'));

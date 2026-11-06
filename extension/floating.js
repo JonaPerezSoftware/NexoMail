@@ -24,9 +24,9 @@ if(!['gmail','outlook'].includes(provider) || !bridge || !allowedOrigins.has(par
 }else{
   displayMode(expanded);
   frame=document.createElement('iframe');frame.title=provider==='gmail'?'Chat de Gmail':'Chat de Outlook';
-  frame.src=chrome.runtime.getURL(`apps/${provider}/index.html`)+`?floating=1&bridge=${encodeURIComponent(bridge)}&version=1.8.2`;
+  frame.src=chrome.runtime.getURL(`apps/${provider}/index.html`)+`?floating=1&bridge=${encodeURIComponent(bridge)}&version=1.10.0`;
   frame.addEventListener('load',sendSection);document.getElementById('workspace').append(frame);waitForApp();
-  document.getElementById('retry').addEventListener('click',()=>{waitForApp();frame.src=chrome.runtime.getURL(`apps/${provider}/index.html`)+`?floating=1&bridge=${encodeURIComponent(bridge)}&version=1.8.2`;});
+  document.getElementById('retry').addEventListener('click',()=>{waitForApp();frame.src=chrome.runtime.getURL(`apps/${provider}/index.html`)+`?floating=1&bridge=${encodeURIComponent(bridge)}&version=1.10.0`;});
   document.getElementById('open-full').addEventListener('click',()=>chrome.tabs.create({url:chrome.runtime.getURL(`apps/${provider}/index.html`)}));
   for(const button of document.querySelectorAll('[data-section]'))button.addEventListener('click',()=>{select(button.dataset.section);sendSection();});
   window.addEventListener('message',event=>{
@@ -35,6 +35,7 @@ if(!['gmail','outlook'].includes(provider) || !bridge || !allowedOrigins.has(par
       return;
     }
     if(event.origin!==extensionOrigin || event.source!==frame.contentWindow || event.data?.bridge!==bridge)return;
+    if(event.data.type==='EMAILAGENT_THEME'){document.documentElement.dataset.theme=event.data.theme==='dark'?'dark':'light';return;}
     if(event.data.type==='EMAILAGENT_APP_ERROR'){clearTimeout(loadTimer);loading.hidden=false;status.textContent='La interfaz no pudo iniciar. Vuelve a abrir el chat o recarga la pestaña del correo después de actualizar NexoMail.';recovery.hidden=false;}
     if(event.data.type==='EMAILAGENT_APP_READY'){ready=true;clearTimeout(loadTimer);loading.hidden=true;sendSection();}
     if(event.data.type==='EMAILAGENT_VIEW' && ['chat','mail','actions','history','settings'].includes(event.data.section)){

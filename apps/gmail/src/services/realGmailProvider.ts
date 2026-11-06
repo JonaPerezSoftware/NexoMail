@@ -1,5 +1,8 @@
-import { analyzeMail, inspectHtml } from './mail-insights';
-import type { Email } from '../types/email';
+import { analyzeMail, inspectHtml } from '@shared/mail/mail-insights';
+import type { Email , MailFile} from '../types/email';
+import { MANUAL_CATEGORIES } from '../types/email';
+
+import { MAX_ATTACHMENT_BYTES } from './platform';
 
 export type GmailConfig = {
   clientId: string;
@@ -24,10 +27,10 @@ export class RealGmailProvider {
 
   public loadSavedConfig(): boolean {
     try {
-      const saved = sessionStorage.getItem(GMAIL_CONFIG_KEY);
+      const saved = sessionStorage.getItem(GMAIL_CONFIG_KEY) || localStorage.getItem(GMAIL_CONFIG_KEY);
       if (saved) {
         this.config = JSON.parse(saved);
-        if (this.config?.accessToken) {
+        if (this.config?.accessToken || this.config?.sessionId) {
           this.isLiveMode = true;
           return true;
         }
@@ -44,13 +47,18 @@ export class RealGmailProvider {
     if (cleanToken || config.sessionId) {
       this.isLiveMode = true;
     }
-    sessionStorage.setItem(GMAIL_CONFIG_KEY, JSON.stringify(this.config));
+    try {
+      const payload = JSON.stringify(this.config);
+      sessionStorage.setItem(GMAIL_CONFIG_KEY, payload);
+      localStorage.setItem(GMAIL_CONFIG_KEY, payload);
+    } catch {}
   }
 
   public clearConfig() {
     this.config = null;
     this.isLiveMode = false;
     sessionStorage.removeItem(GMAIL_CONFIG_KEY);
+    localStorage.removeItem(GMAIL_CONFIG_KEY);
   }
 
   public isConnected(): boolean {
@@ -58,6 +66,19 @@ export class RealGmailProvider {
   }
 
   public getSessionKey(): string {return this.isConnected() ? 'gmail:'+(window.emailAgentHost.googleSessionId() || 'disconnected') : 'gmail:simulated';}
+  public accountEmail(): string { return this.config?.email || ''; }
+  /** Same steps the app used before: the Client ID comes from the extension options. */
+  public async connect(): Promise<void> {
+    await window.emailAgentHost.ready;
+    const clientId=window.emailAgentHost.config.googleClientId?.trim();
+    if(!clientId){await window.emailAgentHost.openOptions();throw new Error('Falta configurar Google en las opciones de la extensión.');}
+    const auth=await window.emailAgentHost.googleLogin(clientId);
+    this.saveConfig({...auth,clientSecret:'',redirectUri:''});
+  }
+  public async disconnect(): Promise<void> {
+    await window.emailAgentHost.googleDisconnect();
+    this.clearConfig();
+  }
   public getConfig(): GmailConfig | null {
     return this.config;
   }
@@ -99,12 +120,26 @@ export class RealGmailProvider {
   }
 
   // Real Gmail API call to list messages
+  private labelNames: {session:string;names:Map<string,string>}|null=null;
+
+  /** Gmail returns label ids; manual categories are user labels, so their names are looked up once per session. */
+  private async userLabelNames(token:string):Promise<Map<string,string>>{
+    const session=this.getSessionKey();
+    if(this.labelNames?.session===session)return this.labelNames.names;
+    const res=await this.gmailRequest('https://gmail.googleapis.com/gmail/v1/users/me/labels',{headers:{Authorization:`Bearer ${token}`}});
+    const names=new Map<string,string>();
+    if(res.ok){const data=(await res.json()) as {labels?:Array<{id:string;name:string;type?:string}>};for(const label of data.labels || [])if(label.type!=='system')names.set(label.id,label.name);}
+    this.labelNames={session,names};
+    return names;
+  }
+
   public async fetchEmails(query: string = 'in:inbox', maxResults: number = 10): Promise<Email[]> {
     if (!this.config?.sessionId) {
       throw new Error('No hay una sesión activa de Gmail API. Por favor conecta tu cuenta.');
     }
 
     const token=await this.accessToken();
+    const labelNames=await this.userLabelNames(token).catch(()=>new Map<string,string>());
     try {
       // 1. List message IDs
       const listUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=${maxResults}`;
@@ -131,7 +166,7 @@ export class RealGmailProvider {
           });
           if (!msgRes.ok) return null;
           const msg = await msgRes.json();
-          return this.parseGmailMessage(msg);
+          return this.parseGmailMessage(msg,labelNames);
         })
       );
 
@@ -143,7 +178,7 @@ export class RealGmailProvider {
   }
 
   // Parse Gmail API JSON object to our Email domain model
-  private parseGmailMessage(msg: any): Email {
+  private parseGmailMessage(msg: any,labelNames:Map<string,string>=new Map()): Email {
     const headers = msg.payload?.headers || [];
     const getHeader = (name: string) => headers.find((h: any) => h.name.toLowerCase() === name.toLowerCase())?.value || '';
 
@@ -162,13 +197,13 @@ export class RealGmailProvider {
 
     // Walk nested MIME alternatives, retaining hidden HTML destinations for analysis.
     const texts:string[]=[],htmls:string[]=[],filenames:string[]=[];
-    let count=0,partial=false,remaining=120000;
+    let count=0,partial=false,remaining=500000;
     const walk=(part:any,depth=0):void=>{
       if(!part || depth>12 || ++count>80){partial=true;return;}
       if(part.filename){filenames.push(String(part.filename));return;}
       if(part.body?.data && ['text/plain','text/html'].includes(part.mimeType)){
         const encoded=String(part.body.data);
-        if(encoded.length>200000){partial=true;return;}
+        if(encoded.length>800000){partial=true;return;}
         let decoded='';
         try{decoded=this.decodeBase64Url(encoded);}catch{partial=true;return;}
         if(decoded.length>remaining)partial=true;
@@ -192,17 +227,20 @@ export class RealGmailProvider {
       sender: senderEmail,
       senderName: senderName,
       senderAvatar: undefined,
-      recipient: 'me',
+      recipient: getHeader('To') || 'me',
       subject: subject,
       snippet: msg.snippet || '',
       body: body,
+      bodyHtml: html || undefined,
       date: dateStr ? new Date(dateStr).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }) : 'Reciente',
       timestamp: parseInt(msg.internalDate || Date.now().toString(), 10),
       read: !isUnread,
       category: msg.labelIds?.includes('CATEGORY_PROMOTIONS') ? 'Boletines' : msg.labelIds?.includes('CATEGORY_PERSONAL') ? 'Personal' : msg.labelIds?.includes('IMPORTANT') ? 'Importante' : 'Sin clasificar',
       insights,
       priority: isUrgent ? 'urgent' : 'normal',
-      labels: msg.labelIds || []
+      labels: msg.labelIds || [],
+      manualCategories: (msg.labelIds || []).map((id:string)=>labelNames.get(id)).filter((name:string|undefined):name is string=>!!name && (MANUAL_CATEGORIES as readonly string[]).includes(name)),
+      trashed: (msg.labelIds || []).includes('TRASH')
     };
   }
 
@@ -224,9 +262,32 @@ export class RealGmailProvider {
     }
   }
 
-  // Real Gmail API call to Send email
-  public async sendEmail(recipient: string, subject: string, body: string): Promise<void> {
+  public async untrashEmails(ids: string[]): Promise<void> {
     if (!this.config?.sessionId) throw new Error('Sesión no autorizada');
+    const token=await this.accessToken(),session=this.getSessionKey();
+    for (const id of ids) {
+      if(session!==this.getSessionKey())throw new Error('La sesión cambió. Se detuvo el resto de la operación.');
+      const res = await this.gmailRequest(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(id)}/untrash`, {method: 'POST',headers: { Authorization: `Bearer ${token}` }});
+      if (!res.ok) throw new Error('Gmail no confirmó la recuperación. Revisa la papelera antes de volver a intentarlo.');
+    }
+  }
+
+  public async removeLabel(ids: string[], labelName: string): Promise<void> {
+    if (!this.config?.sessionId) throw new Error('Sesión no autorizada');
+    const token=await this.accessToken();
+    const names=await this.userLabelNames(token);
+    const labelId=[...names.entries()].find(([,name])=>name.toLowerCase()===labelName.toLowerCase())?.[0];
+    if(!labelId)return;
+    for (const id of ids) {
+      const res = await this.gmailRequest(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(id)}/modify`, {method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify({removeLabelIds:[labelId]})});
+      if (!res.ok) throw new Error('Gmail no confirmó el cambio de clasificación.');
+    }
+  }
+
+  // Real Gmail API call to Send email
+  public async sendEmail(recipient: string, subject: string, body: string, attachments: MailFile[] = []): Promise<void> {
+    if (!this.config?.sessionId) throw new Error('Sesión no autorizada');
+    if (attachments.length) return this.sendWithAttachments(recipient, subject, body, attachments);
 
     const token=await this.accessToken();
     if(!/^[^\s<>@,;\r\n]+@[^\s<>@,;\r\n]+\.[^\s<>@,;\r\n]+$/.test(recipient) || /[\r\n]/.test(subject)) throw new Error('Revisa el destinatario y el asunto.');
@@ -257,11 +318,32 @@ export class RealGmailProvider {
     }
   }
 
+  /** Multipart message through Gmail's upload endpoint, which accepts messages up to 35 MB. */
+  private async sendWithAttachments(recipient: string, subject: string, body: string, attachments: MailFile[]): Promise<void> {
+    const token=await this.accessToken();
+    if(!/^[^\s<>@,;\r\n]+@[^\s<>@,;\r\n]+\.[^\s<>@,;\r\n]+$/.test(recipient) || /[\r\n]/.test(subject)) throw new Error('Revisa el destinatario y el asunto.');
+    const total=attachments.reduce((sum,file)=>sum+file.size,0);
+    if(total>MAX_ATTACHMENT_BYTES) throw new Error('Los adjuntos superan el límite de 20 MB por mensaje.');
+    const boundary='nexomail-'+crypto.randomUUID();
+    const encodeWord=(text:string)=>`=?utf-8?B?${btoa(unescape(encodeURIComponent(text)))}?=`;
+    const wrap=(value:string)=>value.replace(/.{1,76}/g,'$&\r\n');
+    const safeType=(type:string)=>/^[\w.+-]+\/[\w.+-]+$/.test(type)?type:'application/octet-stream';
+    const parts=[
+      `To: ${recipient}`,`Subject: ${encodeWord(subject)}`,'MIME-Version: 1.0',`Content-Type: multipart/mixed; boundary="${boundary}"`,'',
+      `--${boundary}`,'Content-Type: text/plain; charset=utf-8','Content-Transfer-Encoding: base64','',wrap(btoa(unescape(encodeURIComponent(body)))),
+      ...attachments.flatMap(file=>{const name=file.name.replace(/[\r\n"\\]/g,'_');return [`--${boundary}`,`Content-Type: ${safeType(file.type)}; name="${encodeWord(name)}"`,`Content-Disposition: attachment; filename*=UTF-8''${encodeURIComponent(name)}`,'Content-Transfer-Encoding: base64','',wrap(file.data)];}),
+      `--${boundary}--`,''
+    ].join('\r\n');
+    const res=await this.gmailRequest('https://gmail.googleapis.com/upload/gmail/v1/users/me/messages/send?uploadType=media',{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'message/rfc822'},body:parts});
+    if(!res.ok){const err=await res.json().catch(()=>({}));throw new Error(err.error?.message || 'Gmail no aceptó el mensaje con adjuntos.');}
+  }
+
   public async labelEmails(ids: string[], labelName: string): Promise<void> {
     if (!this.config?.sessionId) throw new Error('Sesión no autorizada');
 
     const token=await this.accessToken(),session=this.getSessionKey();
     const labelId = await this.ensureUserLabel(labelName,token);
+    this.labelNames=null;
     if(session!==this.getSessionKey())throw new Error('La sesión cambió. Se detuvo el etiquetado.');
 
     await Promise.all(

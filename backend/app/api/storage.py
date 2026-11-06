@@ -85,10 +85,10 @@ class AuditBatch(Strict):
     events:list[AuditRecord]=Field(max_length=100)
 
 def account(connection,profile):
-    return connection.execute('''INSERT INTO nexomail.accounts(id,provider,provider_subject,email,display_name)
-        VALUES(%s,%s,%s,%s,%s) ON CONFLICT(provider,provider_subject) DO UPDATE
-        SET email=excluded.email,display_name=excluded.display_name,last_seen_at=now() RETURNING id''',
-        (uuid.uuid4(),profile['provider'],profile['subject'],profile['email'],profile['name'])).fetchone()['id']
+    return connection.execute('''INSERT INTO nexomail.tbl_mae_cuentas(id_cuenta,cod_proveedor,cod_sujeto_proveedor,txt_correo,nom_usuario,est_registro,fec_creacion,fec_modificacion,fec_ultimo_acceso)
+        VALUES(%s,%s,%s,%s,%s,'A',now(),now(),now()) ON CONFLICT(cod_proveedor,cod_sujeto_proveedor) DO UPDATE
+        SET txt_correo=excluded.txt_correo,nom_usuario=excluded.nom_usuario,fec_ultimo_acceso=now(),fec_modificacion=now(),est_registro='A' RETURNING id_cuenta''',
+        (uuid.uuid4(),profile['provider'],profile['subject'],profile['email'],profile['name'])).fetchone()['id_cuenta']
 
 def utc(value:datetime):
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
@@ -98,11 +98,12 @@ def load_workspace(provider:Provider,authorization:str=Header(default='')):
     profile=identity(provider,authorization)
     with database() as connection:
         aid=account(connection,profile)
-        versions={row['section']:row['revision'] for row in connection.execute('SELECT section,revision FROM nexomail.workspace_versions WHERE account_id=%s',(aid,))}
-        chat=[{'id':row['message_id'],'role':row['role'],'content':row['content'],'created_at':row['created_at']} for row in connection.execute('SELECT * FROM nexomail.chat_messages WHERE account_id=%s ORDER BY position',(aid,))]
-        drafts=[{'id':row['draft_id'],'to':row['recipient'],'cc':row['cc'],'bcc':row['bcc'],'subject':row['subject'],'body':row['body'],'reply_to_id':row['reply_to_id'],'attachments_omitted':row['attachments_omitted'],'created_at':row['created_at']} for row in connection.execute('SELECT * FROM nexomail.mail_drafts WHERE account_id=%s ORDER BY updated_at DESC',(aid,))]
-        preferences=connection.execute('SELECT theme,strict_mode,llm_enabled,auto_grouping FROM nexomail.user_preferences WHERE account_id=%s',(aid,)).fetchone()
-        audits=[{'id':row['event_id'],'action_type':row['action_type'],'status':row['status'],'description':row['description'],'details':row['details'],'occurred_at':row['occurred_at']} for row in connection.execute('SELECT * FROM nexomail.audit_events WHERE account_id=%s ORDER BY occurred_at DESC LIMIT 500',(aid,))]
+        versions={row['cod_seccion']:row['num_revision'] for row in connection.execute('SELECT cod_seccion,num_revision FROM nexomail.tbl_tra_versiones_espacio WHERE id_cuenta=%s AND est_registro!=%s',(aid,'E'))}
+        chat=[{'id':row['id_mensaje'],'role':row['cod_rol'],'content':row['txt_contenido'],'created_at':row['fec_creacion']} for row in connection.execute('SELECT id_mensaje,cod_rol,txt_contenido,fec_creacion FROM nexomail.tbl_tra_mensajes_chat WHERE id_cuenta=%s AND est_registro!=%s ORDER BY num_posicion',(aid,'E'))]
+        drafts=[{'id':row['id_borrador'],'to':row['txt_destinatario'],'cc':row['txt_cc'],'bcc':row['txt_bcc'],'subject':row['txt_asunto'],'body':row['txt_cuerpo'],'reply_to_id':row['id_referencia_respuesta'],'attachments_omitted':row['ind_adjuntos_omitidos'],'created_at':row['fec_creacion']} for row in connection.execute('SELECT id_borrador,txt_destinatario,txt_cc,txt_bcc,txt_asunto,txt_cuerpo,id_referencia_respuesta,ind_adjuntos_omitidos,fec_creacion FROM nexomail.tbl_tra_borradores WHERE id_cuenta=%s AND est_registro!=%s ORDER BY fec_modificacion DESC',(aid,'E'))]
+        pref_row=connection.execute('SELECT cod_tema,ind_modo_estricto,ind_ia_habilitada,ind_agrupacion_automatica FROM nexomail.tbl_cfg_preferencias_usuario WHERE id_cuenta=%s AND est_registro!=%s',(aid,'E')).fetchone()
+        preferences={'theme':pref_row['cod_tema'],'strict_mode':pref_row['ind_modo_estricto'],'llm_enabled':pref_row['ind_ia_habilitada'],'auto_grouping':pref_row['ind_agrupacion_automatica']} if pref_row else None
+        audits=[{'id':row['id_evento'],'action_type':row['cod_tipo_accion'],'status':row['cod_estado_accion'],'description':row['des_evento'],'details':row['txt_detalles'],'occurred_at':row['fec_ocurrencia']} for row in connection.execute('SELECT id_evento,cod_tipo_accion,cod_estado_accion,des_evento,txt_detalles,fec_ocurrencia FROM nexomail.tbl_aud_eventos WHERE id_cuenta=%s AND est_registro!=%s ORDER BY fec_ocurrencia DESC LIMIT 500',(aid,'E'))]
         return {'account':{'provider':provider,'email':profile['email']},'sections':{
             name:{'revision':versions.get(name,0),'data':data} for name,data in [('chat',chat),('drafts',drafts),('preferences',preferences)]},'audit':audits}
 
@@ -120,20 +121,22 @@ def write_section(provider:Provider,section:Section,body:WriteSection,authorizat
     profile=identity(provider,authorization)
     with database() as connection:
         aid=account(connection,profile)
-        connection.execute('INSERT INTO nexomail.workspace_versions(account_id,section) VALUES(%s,%s) ON CONFLICT DO NOTHING',(aid,section))
-        revision=connection.execute('SELECT revision FROM nexomail.workspace_versions WHERE account_id=%s AND section=%s FOR UPDATE',(aid,section)).fetchone()['revision']
+        connection.execute('INSERT INTO nexomail.tbl_tra_versiones_espacio(id_cuenta,cod_seccion,num_revision,est_registro,fec_modificacion) VALUES(%s,%s,0,%s,now()) ON CONFLICT DO NOTHING',(aid,section,'A'))
+        revision=connection.execute('SELECT num_revision FROM nexomail.tbl_tra_versiones_espacio WHERE id_cuenta=%s AND cod_seccion=%s FOR UPDATE',(aid,section)).fetchone()['num_revision']
         if revision!=body.revision:
             raise HTTPException(409,'Otra ventana cambió estos datos. Recarga NexoMail para recuperar la versión guardada; no se sobrescribieron los cambios.')
         if section=='chat':
-            connection.execute('DELETE FROM nexomail.chat_messages WHERE account_id=%s',(aid,))
-            for position,item in enumerate(data):connection.execute('INSERT INTO nexomail.chat_messages(account_id,message_id,role,content,created_at,position) VALUES(%s,%s,%s,%s,%s,%s)',(aid,item.id,item.role,item.content,utc(item.created_at),position))
+            connection.execute('DELETE FROM nexomail.tbl_tra_mensajes_chat WHERE id_cuenta=%s',(aid,))
+            for position,item in enumerate(data):
+                connection.execute('INSERT INTO nexomail.tbl_tra_mensajes_chat(id_cuenta,id_mensaje,cod_rol,txt_contenido,num_posicion,est_registro,fec_creacion) VALUES(%s,%s,%s,%s,%s,%s,%s)',(aid,item.id,item.role,item.content,position,'A',utc(item.created_at)))
         elif section=='drafts':
-            connection.execute('DELETE FROM nexomail.mail_drafts WHERE account_id=%s',(aid,))
-            for item in data:connection.execute('INSERT INTO nexomail.mail_drafts(account_id,draft_id,recipient,cc,bcc,subject,body,reply_to_id,attachments_omitted,created_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',(aid,item.id,item.to,item.cc,item.bcc,item.subject,item.body,item.reply_to_id,item.attachments_omitted,utc(item.created_at)))
+            connection.execute('DELETE FROM nexomail.tbl_tra_borradores WHERE id_cuenta=%s',(aid,))
+            for item in data:
+                connection.execute('INSERT INTO nexomail.tbl_tra_borradores(id_cuenta,id_borrador,txt_destinatario,txt_cc,txt_bcc,txt_asunto,txt_cuerpo,id_referencia_respuesta,ind_adjuntos_omitidos,est_registro,fec_creacion,fec_modificacion) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())',(aid,item.id,item.to,item.cc,item.bcc,item.subject,item.body,item.reply_to_id,item.attachments_omitted,'A',utc(item.created_at)))
         else:
-            connection.execute('''INSERT INTO nexomail.user_preferences(account_id,theme,strict_mode,llm_enabled,auto_grouping) VALUES(%s,%s,%s,%s,%s)
-                ON CONFLICT(account_id) DO UPDATE SET theme=excluded.theme,strict_mode=excluded.strict_mode,llm_enabled=excluded.llm_enabled,auto_grouping=excluded.auto_grouping''',(aid,data.theme,data.strict_mode,data.llm_enabled,data.auto_grouping))
-        connection.execute('UPDATE nexomail.workspace_versions SET revision=revision+1,updated_at=now() WHERE account_id=%s AND section=%s',(aid,section))
+            connection.execute('''INSERT INTO nexomail.tbl_cfg_preferencias_usuario(id_cuenta,cod_tema,ind_modo_estricto,ind_ia_habilitada,ind_agrupacion_automatica,est_registro,fec_creacion,fec_modificacion) VALUES(%s,%s,%s,%s,%s,%s,now(),now())
+                ON CONFLICT(id_cuenta) DO UPDATE SET cod_tema=excluded.cod_tema,ind_modo_estricto=excluded.ind_modo_estricto,ind_ia_habilitada=excluded.ind_ia_habilitada,ind_agrupacion_automatica=excluded.ind_agrupacion_automatica,fec_modificacion=now()''',(aid,data.theme,data.strict_mode,data.llm_enabled,data.auto_grouping,'A'))
+        connection.execute('UPDATE nexomail.tbl_tra_versiones_espacio SET num_revision=num_revision+1,fec_modificacion=now() WHERE id_cuenta=%s AND cod_seccion=%s',(aid,section))
         return {'revision':revision+1,'saved':True}
 
 @router.post('/{provider}/audit')
@@ -142,8 +145,8 @@ def append_audit(provider:Provider,body:AuditBatch,authorization:str=Header(defa
     with database() as connection:
         aid=account(connection,profile)
         for event in body.events:
-            connection.execute('''INSERT INTO nexomail.audit_events(account_id,event_id,action_type,status,description,details,occurred_at)
-                VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING''',(aid,event.id,event.action_type,event.status,event.description,event.details,utc(event.occurred_at)))
+            connection.execute('''INSERT INTO nexomail.tbl_aud_eventos(id_cuenta,id_evento,cod_tipo_accion,cod_estado_accion,des_evento,txt_detalles,fec_ocurrencia,fec_registro,cod_fuente,est_registro)
+                VALUES(%s,%s,%s,%s,%s,%s,%s,now(),%s,%s) ON CONFLICT DO NOTHING''',(aid,event.id,event.action_type,event.status,event.description,event.details,utc(event.occurred_at),'extension_client','A'))
     return {'saved':True}
 
 @router.post('/{provider}/erase')
@@ -152,11 +155,11 @@ def erase_workspace(provider:Provider,authorization:str=Header(default='')):
     with database() as connection:
         # An exclusive account lock prevents a concurrent save interleaving with deletion.
         aid=account(connection,profile)
-        connection.execute('DELETE FROM nexomail.chat_messages WHERE account_id=%s',(aid,))
-        connection.execute('DELETE FROM nexomail.mail_drafts WHERE account_id=%s',(aid,))
-        connection.execute('DELETE FROM nexomail.user_preferences WHERE account_id=%s',(aid,))
-        connection.execute('DELETE FROM nexomail.audit_events WHERE account_id=%s',(aid,))
+        connection.execute('DELETE FROM nexomail.tbl_tra_mensajes_chat WHERE id_cuenta=%s',(aid,))
+        connection.execute('DELETE FROM nexomail.tbl_tra_borradores WHERE id_cuenta=%s',(aid,))
+        connection.execute('DELETE FROM nexomail.tbl_cfg_preferencias_usuario WHERE id_cuenta=%s',(aid,))
+        connection.execute('DELETE FROM nexomail.tbl_aud_eventos WHERE id_cuenta=%s',(aid,))
         for section in ('chat','drafts','preferences'):
-            connection.execute('''INSERT INTO nexomail.workspace_versions(account_id,section,revision) VALUES(%s,%s,1)
-                ON CONFLICT(account_id,section) DO UPDATE SET revision=nexomail.workspace_versions.revision+1,updated_at=now()''',(aid,section))
+            connection.execute('''INSERT INTO nexomail.tbl_tra_versiones_espacio(id_cuenta,cod_seccion,num_revision,est_registro,fec_modificacion) VALUES(%s,%s,1,%s,now())
+                ON CONFLICT(id_cuenta,cod_seccion) DO UPDATE SET num_revision=nexomail.tbl_tra_versiones_espacio.num_revision+1,fec_modificacion=now()''',(aid,section,'A'))
     return {'erased':True}

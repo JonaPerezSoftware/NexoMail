@@ -1,33 +1,69 @@
-import React, { useState } from 'react';
-import { ShieldAlert, Check, X, Mail, Trash2, Tag, AlertTriangle, Info, Edit3, Save, ShieldCheck } from 'lucide-react';
-import type { PendingAction } from '../types/email';
+import { MANUAL_BODY_PLACEHOLDER } from '../services/mailIntent';
+import React, { useRef, useState } from 'react';
+import { Check, X, Mail, Trash2, Tag, Info, PenLine, ShieldCheck, Undo2, Paperclip, MessageSquare, FileText, Image as ImageIcon } from 'lucide-react';
+import type { ActionType, MailFile, PendingAction } from '../types/email';
+import { MAIL, PLATFORM, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_LABEL } from '../services/platform';
+
+const formatSize = (bytes: number) => bytes < 1048576 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1048576).toFixed(1)} MB`;
 
 interface PendingActionsListProps {
   pendingActions: PendingAction[];
   onApprove: (action: PendingAction) => void;
   onReject: (action: PendingAction) => void;
+  onGoToChat?: () => void;
 }
+
+/** One visual language per kind of action: icon, label and the verb on the confirm button. */
+const KIND: Partial<Record<ActionType, { icon: typeof Mail; label: string; confirm: string; tone: 'send' | 'danger' | 'neutral' }>> = {
+  SEND_EMAIL: { icon: Mail, label: 'Enviar correo', confirm: 'Enviar', tone: 'send' },
+  DELETE_EMAIL: { icon: Trash2, label: 'Mover a la papelera', confirm: 'Mover a la papelera', tone: 'danger' },
+  BULK_CLEANUP: { icon: Trash2, label: 'Limpieza de correos', confirm: 'Mover a la papelera', tone: 'danger' },
+  LABEL_EMAIL: { icon: Tag, label: 'Aplicar etiqueta', confirm: 'Aplicar etiqueta', tone: 'neutral' },
+  RESTORE_EMAIL: { icon: Undo2, label: 'Recuperar de la papelera', confirm: 'Recuperar', tone: 'neutral' },
+};
+const FALLBACK_KIND = { icon: Info, label: 'Acción propuesta', confirm: 'Aprobar', tone: 'neutral' as const };
 
 export const PendingActionsList: React.FC<PendingActionsListProps> = ({
   pendingActions,
   onApprove,
-  onReject
+  onReject,
+  onGoToChat
 }) => {
   const [editingActionId, setEditingActionId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState<{ recipient: string; subject: string; body: string }>({
+  const [editForm, setEditForm] = useState<{ recipient: string; subject: string; body: string; files: MailFile[] }>({
     recipient: '',
     subject: '',
-    body: ''
+    body: '',
+    files: []
   });
+  const [fileError, setFileError] = useState('');
+  const fileInput = useRef<HTMLInputElement>(null);
+
+  /** Same limits as the chat and the compose dialog; files stay in memory until the send is approved. */
+  const addFiles = async (list: FileList | null) => {
+    setFileError('');
+    const picked = [...(list ?? [])];
+    const total = editForm.files.reduce((sum, file) => sum + file.size, 0) + picked.reduce((sum, file) => sum + file.size, 0);
+    if (total > MAX_ATTACHMENT_BYTES) { setFileError(`Los adjuntos superan ${MAX_ATTACHMENT_LABEL} en total.`); if (fileInput.current) fileInput.current.value = ''; return; }
+    try {
+      const read = await Promise.all(picked.map(file => new Promise<MailFile>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error(file.name));
+        reader.onload = () => resolve({ name: file.name, type: file.type || 'application/octet-stream', size: file.size, data: String(reader.result).split(',')[1] ?? '' });
+        reader.readAsDataURL(file);
+      })));
+      setEditForm(prev => ({ ...prev, files: [...prev.files, ...read] }));
+    } catch (error) { setFileError(`No se pudo leer ${error instanceof Error ? error.message : 'el archivo'}.`); }
+    finally { if (fileInput.current) fileInput.current.value = ''; }
+  };
 
   if (pendingActions.length === 0) {
     return (
-      <div className="empty-pending-card">
-        <ShieldCheck className="w-8 h-8 text-emerald-400 mb-2 opacity-80" />
-        <h3 className="font-semibold text-slate-200 text-sm">No hay acciones pendientes</h3>
-        <p className="text-xs text-slate-400 max-w-sm text-center mt-1.5 leading-relaxed">
-          Las propuestas del agente aparecerán aquí para que puedas revisarlas y aprobarlas antes de ejecutarlas.
-        </p>
+      <div className="pa-empty">
+        <ShieldCheck aria-hidden="true" />
+        <h3>No hay acciones pendientes</h3>
+        <p>Pídele al asistente que redacte, clasifique u organice correos y sus propuestas aparecerán aquí.</p>
+        {onGoToChat && <button type="button" className="pa-btn pa-btn-secondary" onClick={onGoToChat}><MessageSquare aria-hidden="true" />Ir al chat</button>}
       </div>
     );
   }
@@ -37,174 +73,179 @@ export const PendingActionsList: React.FC<PendingActionsListProps> = ({
     setEditForm({
       recipient: action.payload.recipient || '',
       subject: action.payload.subject || '',
-      body: action.payload.body || ''
+      body: action.payload.body || '',
+      files: [...(action.payload.attachments ?? [])]
     });
+    setFileError('');
   };
 
   const handleSaveEdit = (action: PendingAction) => {
     action.payload.recipient = editForm.recipient;
     action.payload.subject = editForm.subject;
     action.payload.body = editForm.body;
+    action.payload.attachments = editForm.files.length ? editForm.files : undefined;
     action.title = `Enviar correo a ${editForm.recipient || 'Destinatario'}`;
     action.description = `Asunto: "${editForm.subject}"`;
     setEditingActionId(null);
   };
 
   return (
-    <div className="pending-actions-container">
-      <div className="pending-header">
-        <div className="pending-header-title">
-          <ShieldAlert className="w-4 h-4 text-amber-400" />
-          <h3>Propuestas para revisar ({pendingActions.length})</h3>
-        </div>
-        <span className="security-pill">Aprobación humana</span>
-      </div>
+    <div className="pa-list">
+      {pendingActions.map(action => {
+        const isEditing = editingActionId === action.id;
+        const kind = KIND[action.actionType] ?? FALLBACK_KIND;
+        const Icon = kind.icon;
+        const isSend = action.actionType === 'SEND_EMAIL';
+        const needsBody = Boolean(action.payload.body?.includes(MANUAL_BODY_PLACEHOLDER));
+        const count = action.payload.emailIds?.length ?? 0;
+        const headline = isSend ? action.payload.recipient || 'Sin destinatario' : action.title;
+        const fieldId = (name: string) => `pa-${action.id}-${name}`;
+        const note = needsBody
+          ? 'Escribe el mensaje con «Editar» antes de enviarlo.'
+          : !action.payload.isReal
+            ? 'Modo demostración: no se cambiará ningún correo real.'
+            : isSend
+              ? `Se enviará desde tu cuenta de ${MAIL} al pulsar Enviar. Después no se puede anular.`
+              : kind.tone === 'danger'
+                ? PLATFORM === 'outlook' ? 'Irá a Elementos eliminados de Outlook, donde podrás recuperarlo.' : 'Irá a la papelera de Gmail, donde podrás recuperarlo durante 30 días.'
+                : action.actionType === 'RESTORE_EMAIL'
+                ? `Volverá a tu bandeja de entrada de ${MAIL}.`
+                : action.aiExplanation;
 
-      <div className="pending-cards-grid">
-        {pendingActions.map(action => {
-          const isEditing = editingActionId === action.id;
-
-          return (
-            <div key={action.id} className="pending-card">
-              <div className="card-top">
-                <div className="flex items-center gap-2">
-                  {action.actionType === 'SEND_EMAIL' && <Mail className="w-4 h-4 text-sky-400" />}
-                  {action.actionType === 'DELETE_EMAIL' && <Trash2 className="w-4 h-4 text-rose-400" />}
-                  {action.actionType === 'BULK_CLEANUP' && <Trash2 className="w-4 h-4 text-amber-400" />}
-                  {action.actionType === 'LABEL_EMAIL' && <Tag className="w-4 h-4 text-indigo-400" />}
-                  <span className="action-title">{action.title}</span>
-                </div>
-
-                <span className={`impact-badge ${action.impactScore.toLowerCase()}`}>
-                  Impacto {action.impactScore}
-                </span>
+        return (
+          <article key={action.id} className={`pa-card pa-${kind.tone}`} aria-label={`${kind.label}: ${headline}`}>
+            <header className="pa-head">
+              <span className="pa-icon" aria-hidden="true"><Icon /></span>
+              <div className="pa-heading">
+                <span className="pa-kind">{kind.label}</span>
+                <h3 className="pa-title">{headline}</h3>
               </div>
+              <span className={`pa-impact pa-impact-${action.impactScore === 'Crítico' || action.impactScore === 'Alto' ? 'high' : 'low'}`}>
+                Impacto {action.impactScore.toLowerCase()}
+              </span>
+            </header>
 
-              <p className="card-desc">{action.description}</p>
+            {isEditing ? (
+              <div className="pa-form">
+                <label htmlFor={fieldId('to')}>Para</label>
+                <input
+                  id={fieldId('to')}
+                  type="email"
+                  value={editForm.recipient}
+                  onChange={e => setEditForm(prev => ({ ...prev, recipient: e.target.value }))}
+                />
+                <label htmlFor={fieldId('subject')}>Asunto</label>
+                <input
+                  id={fieldId('subject')}
+                  type="text"
+                  value={editForm.subject}
+                  onChange={e => setEditForm(prev => ({ ...prev, subject: e.target.value }))}
+                />
+                <label htmlFor={fieldId('body')}>Mensaje</label>
+                <textarea
+                  id={fieldId('body')}
+                  rows={8}
+                  value={editForm.body}
+                  onChange={e => setEditForm(prev => ({ ...prev, body: e.target.value }))}
+                />
+                {editForm.files.length > 0 && (
+                  <ul className="pa-files pa-files-edit" aria-label="Adjuntos">
+                    {editForm.files.map((file, index) => (
+                      <li key={index}>
+                        {file.type.startsWith('image/') ? <ImageIcon aria-hidden="true" /> : <FileText aria-hidden="true" />}
+                        <span>{file.name}</span><small>{formatSize(file.size)}</small>
+                        <button type="button" className="cm-remove" onClick={() => setEditForm(prev => ({ ...prev, files: prev.files.filter((_, i) => i !== index) }))} aria-label={`Quitar ${file.name}`}><X aria-hidden="true" /></button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {fileError && <p className="cm-error" role="alert">{fileError}</p>}
+              </div>
+            ) : (
+              <>
+                <dl className="pa-fields">
+                  {isSend && action.payload.subject && (
+                    <div><dt>Asunto</dt><dd>{action.payload.subject}</dd></div>
+                  )}
+                  {!isSend && action.description && (
+                    <div><dt>{count > 1 ? 'Correos' : 'Correo'}</dt><dd>{action.description}</dd></div>
+                  )}
+                  {!isSend && count > 1 && (
+                    <div><dt>Total</dt><dd>{count} correos</dd></div>
+                  )}
+                  {action.actionType === 'LABEL_EMAIL' && action.payload.label && (
+                    <div><dt>Etiqueta</dt><dd>{action.payload.label}</dd></div>
+                  )}
+                </dl>
+                {isSend && action.payload.body && (
+                  <div className="pa-message">{action.payload.body}</div>
+                )}
+                {isSend && !!action.payload.attachments?.length && (
+                  <ul className="pa-files" aria-label="Adjuntos">
+                    {action.payload.attachments.map((file, index) => (
+                      <li key={index}><Paperclip aria-hidden="true" /><span>{file.name}</span><small>{formatSize(file.size)}</small></li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            )}
 
-              {/* Action Payload Preview or Edit Mode */}
+            <p className="pa-note">
+              <Info aria-hidden="true" />
+              <span>{note}</span>
+            </p>
+
+            <footer className="pa-actions">
               {isEditing ? (
-                <div className="payload-preview edit-mode">
-                  <div className="flex justify-between items-center mb-2.5 pb-2 border-b border-white/10">
-                    <span className="text-xs font-semibold text-sky-300 flex items-center gap-1.5">
-                      <Edit3 className="w-3.5 h-3.5" /> Modificar Parámetros del Borrador
-                    </span>
-                    <button
-                      onClick={() => handleSaveEdit(action)}
-                      className="btn-approve text-xs py-1 px-2.5"
-                    >
-                      <Save className="w-3 h-3 mr-1 inline" /> Guardar Cambios
-                    </button>
-                  </div>
-
-                  <div className="mb-2">
-                    <label className="text-[11px] text-slate-400 block mb-1 font-mono">Destinatario:</label>
-                    <input
-                      type="email"
-                      value={editForm.recipient}
-                      onChange={e => setEditForm(prev => ({ ...prev, recipient: e.target.value }))}
-                      className="chat-input w-full text-xs"
-                    />
-                  </div>
-
-                  <div className="mb-2">
-                    <label className="text-[11px] text-slate-400 block mb-1 font-mono">Asunto:</label>
-                    <input
-                      type="text"
-                      value={editForm.subject}
-                      onChange={e => setEditForm(prev => ({ ...prev, subject: e.target.value }))}
-                      className="chat-input w-full text-xs"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="text-[11px] text-slate-400 block mb-1 font-mono">Cuerpo del Mensaje:</label>
-                    <textarea
-                      rows={4}
-                      value={editForm.body}
-                      onChange={e => setEditForm(prev => ({ ...prev, body: e.target.value }))}
-                      className="chat-input w-full text-xs font-mono"
-                    />
-                  </div>
-                </div>
+                <>
+                  <input ref={fileInput} type="file" multiple hidden onChange={e => void addFiles(e.target.files)} />
+                  <button type="button" key="attach" className="pa-btn pa-btn-ghost pa-edit" onClick={() => fileInput.current?.click()} title={`Adjuntar archivos o imágenes (hasta ${MAX_ATTACHMENT_LABEL} en total)`}>
+                    <Paperclip aria-hidden="true" />
+                    Adjuntar
+                  </button>
+                  <button type="button" key="cancel" className="pa-btn pa-btn-ghost" onClick={() => setEditingActionId(null)}>
+                    Cancelar
+                  </button>
+                  <button type="button" key="save" className="pa-btn pa-btn-primary" onClick={() => handleSaveEdit(action)}>
+                    <Check aria-hidden="true" />
+                    Guardar cambios
+                  </button>
+                </>
               ) : (
-                <div className="payload-preview">
-                  <div className="flex justify-between items-center mb-1.5">
-                    <div className="preview-label">
-                      <Info className="w-3.5 h-3.5" />
-                      <span>Parámetros de la Acción:</span>
-                    </div>
-
-                    {action.actionType === 'SEND_EMAIL' && (
-                      <button
-                        onClick={() => handleStartEdit(action)}
-                        className="text-xs text-sky-400 hover:text-sky-300 flex items-center gap-1 bg-transparent border-0 cursor-pointer p-0 font-medium"
-                      >
-                        <Edit3 className="w-3 h-3" /> Editar Borrador
-                      </button>
-                    )}
-                  </div>
-
-                  {action.payload.recipient && (
-                    <div className="preview-row">
-                      <span className="field-name">Para:</span>
-                      <span className="field-val font-mono text-sky-300">{action.payload.recipient}</span>
-                    </div>
+                <>
+                  {isSend && (
+                    <button type="button" key="edit" className="pa-btn pa-btn-ghost pa-edit" onClick={() => handleStartEdit(action)}>
+                      <PenLine aria-hidden="true" />
+                      Editar
+                    </button>
                   )}
-
-                  {action.payload.subject && (
-                    <div className="preview-row">
-                      <span className="field-name">Asunto:</span>
-                      <span className="field-val font-medium">{action.payload.subject}</span>
-                    </div>
-                  )}
-
-                  {action.payload.emailIds && action.payload.emailIds.length > 0 && (
-                    <div className="preview-row">
-                      <span className="field-name">Elementos:</span>
-                      <span className="field-val font-mono">{action.payload.emailIds.length} correos afectados</span>
-                    </div>
-                  )}
-
-                  {action.payload.body && (
-                    <div className="preview-body-box">
-                      <span className="field-name block mb-1">Cuerpo:</span>
-                      <p className="body-text">{action.payload.body}</p>
-                    </div>
-                  )}
-                </div>
+                  <button
+                    type="button"
+                    key="reject"
+                    className="pa-btn pa-btn-secondary"
+                    onClick={() => onReject(action)}
+                    title="Descartar esta propuesta sin ejecutarla"
+                  >
+                    <X aria-hidden="true" />
+                    Rechazar
+                  </button>
+                  <button
+                    type="button"
+                    key="approve"
+                    className={`pa-btn ${kind.tone === 'danger' ? 'pa-btn-danger' : 'pa-btn-primary'}`}
+                    onClick={() => onApprove(action)}
+                    disabled={needsBody}
+                    title={needsBody ? 'Edita el borrador y escribe el mensaje antes de aprobar' : `Aprobar esta propuesta y ejecutarla en ${MAIL}`}
+                  >
+                    <Check aria-hidden="true" />
+                    {kind.confirm}
+                  </button>
+                </>
               )}
-
-              {/* AI Guardrail Explanation */}
-              <div className="ai-explanation">
-                <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                <p>{action.aiExplanation}</p>
-              </div>
-
-              {/* Action Buttons */}
-              <div className="action-buttons">
-                <button
-                  onClick={() => onReject(action)}
-                  className="btn-reject"
-                  title="Cancelar y descartar esta acción"
-                >
-                  <X className="w-3.5 h-3.5" />
-                  <span>Rechazar</span>
-                </button>
-
-                <button
-                  onClick={() => onApprove(action)}
-                  className="btn-approve"
-                  title="Aprobar esta propuesta y ejecutarla en Gmail"
-                >
-                  <Check className="w-3.5 h-3.5" />
-                  <span>Aprobar y ejecutar</span>
-                </button>
-              </div>
-            </div>
-          );
-        })}
-      </div>
+            </footer>
+          </article>
+        );
+      })}
     </div>
   );
 };

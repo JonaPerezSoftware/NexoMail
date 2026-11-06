@@ -2,8 +2,6 @@
 cd /d "%~dp0"
 call npm --prefix apps\gmail ci
 if errorlevel 1 goto failed
-call npm --prefix apps\outlook ci
-if errorlevel 1 goto failed
 node scripts\build.mjs
 if errorlevel 1 goto failed
 echo Compilacion completada. Recarga la extension.

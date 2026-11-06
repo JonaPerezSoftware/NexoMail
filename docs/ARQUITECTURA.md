@@ -4,26 +4,24 @@
 flowchart TD
     Web[Pestaña Gmail u Outlook] --> Detector[Detector de plataforma y botón]
     Detector --> Panel[Ventana flotante Manifest V3]
-    Panel --> Gmail[React: módulo Gmail empaquetado]
-    Panel --> Outlook[Angular: módulo Outlook empaquetado]
-    Gmail --> Google[OAuth Google y Gmail API]
-    Outlook --> Microsoft[MSAL PKCE y Microsoft Graph]
-    Gmail --> Backend[FastAPI local: 127.0.0.1:8000]
-    Outlook --> Backend
+    Panel --> UI[React: una interfaz para ambos correos]
+    UI --> Gmail[Adaptador Gmail: OAuth Google y Gmail API]
+    UI --> Outlook[Adaptador Outlook: MSAL PKCE y Microsoft Graph]
+    UI --> Backend[FastAPI local: 127.0.0.1:8000]
     Backend --> Model[Gemini u Ollama]
 ```
 
 ## Estructura
 
 - `extension/`: manifiesto, detección, botón, panel, opciones, adaptador de navegador, iconos y aplicaciones compiladas.
-- `apps/gmail/`: fuentes React del primer proyecto, adaptadas para recursos locales y autorización nativa.
-- `apps/outlook/`: fuentes Angular del segundo proyecto, incluido su historial, propuestas y avisos de entrega.
-- `backend/`: FastAPI del proyecto Outlook más el adaptador de herramientas de Gmail, con configuración común y clave de enlace.
+- `apps/gmail/`: interfaz React única. Se compila en modo Gmail (`.env`) y en modo Outlook (`.env.outlook`); `src/services/mailProvider.ts` elige el adaptador.
+- `shared/`: estilos, análisis de correo, almacenamiento y textos del chat comunes.
+- `backend/`: FastAPI con el proxy de IA (`/api/gmail/agent/*`), el almacenamiento PostgreSQL (`/api/storage/*`) y la comprobación de estado (`/api/health`).
 - `scripts/`: configuración inicial y compilación reproducible.
 
 ## Decisiones
 
-Las interfaces se ejecutan como páginas empaquetadas de la extensión. No cargan un frontend de localhost ni código desde un CDN. La IA es un servicio local externo a la extensión, porque una clave de proveedor no debe incorporarse al JavaScript distribuido. Se conserva la separación React/Angular para integrar las funciones existentes sin una migración completa de frameworks.
+Las interfaces se ejecutan como páginas empaquetadas de la extensión. No cargan un frontend de localhost ni código desde un CDN. La IA es un servicio local externo a la extensión, porque una clave de proveedor no debe incorporarse al JavaScript distribuido. Gmail y Outlook comparten la misma interfaz; solo cambia el adaptador que habla con cada proveedor.
 
 Los content scripts solo insertan un botón aislado mediante Shadow DOM. No capturan cuerpos de correo ni credenciales. Las APIs de correo se llaman desde el módulo autorizado. Las acciones sensibles de Gmail se vinculan a un identificador de sesión y modo; la aprobación bloquea los intentos repetidos. No se realiza fallback de Gmail real a simulación al fallar una consulta.
 
@@ -37,16 +35,14 @@ El backend escucha solo en loopback. CORS permite orígenes de extensión Chromi
 
 ## Compilaciones y límites conocidos
 
-- React: comprobación TypeScript y compilación Vite completadas.
-- Angular: compilación AOT de producción completada. El paquete inicial supera el umbral de advertencia de 1 MB, pero queda por debajo del límite de error de 2 MB. El optimizador omite un selector de Bootstrap form-floating no utilizado.
-- Se desactiva inlineCritical de Angular para evitar manejadores inline de carga de CSS, incompatibles con la política CSP de Manifest V3.
+- React: comprobación TypeScript y compilación Vite completadas para Gmail y Outlook.
 - Vite avisa de que `host-bridge.js` es un script externo al empaquetador: es intencional; es un archivo local incluido en la extensión. No es código remoto.
 - No se añadieron ni ejecutaron suites de pruebas. Las compilaciones no validan los consentimientos OAuth ni la ejecución real en Chrome/Edge/Brave.
 - La instalación, el comportamiento del panel, OAuth real, permisos organizativos y llamadas reales requieren comprobación con el usuario. No se afirma que la extensión esté publicada o revisada por una tienda.
 - La sesión de cada instancia tiene sus propios borradores y propuestas. No hay sincronización entre pestañas ni base de datos.
 - No se sincroniza automáticamente el mensaje seleccionado en la página original; se selecciona dentro del módulo.
 - Gmail conserva las capacidades de su proyecto base; enviar una propuesta basada en otro correo no añade por sí mismo soporte completo de conversación Gmail/threadId.
-- La detección de avisos de entrega de Outlook conserva el alcance limitado de la corrección anterior. Ningún proveedor se considera entregado por aparecer en Enviados.
+- Ningún proveedor se considera entregado por aparecer en Enviados. La interfaz React no incluye el aviso de entregas fallidas que tenía la antigua app Angular.
 
 ## Referencias oficiales
 
@@ -72,4 +68,4 @@ Solo floating.html se declara web-accessible, y únicamente para los dominios de
 
 Las dos aplicaciones se abren directamente en su chat en modo flotante, con navegación compacta. Los flujos OAuth y las aprobaciones permanecen en los módulos. El icono de la barra del navegador alterna la misma burbuja en lugar de abrir un panel.
 
-Se completaron las compilaciones de React y Angular y la comprobación de sintaxis de los scripts. La inserción real en Gmail/Outlook, el arrastre y los flujos de cuenta deben comprobarse todavía en el navegador del usuario.
+Se completaron las compilaciones React y la comprobación de sintaxis de los scripts. La inserción real en Gmail/Outlook, el arrastre y los flujos de cuenta deben comprobarse todavía en el navegador del usuario.

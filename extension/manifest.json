@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "NexoMail · Gmail y Outlook",
-  "version": "1.8.2",
+  "version": "1.10.0",
   "minimum_chrome_version": "116",
   "description": "Asistente de correo con IA para Gmail y Outlook. Proyecto de tesis de Marlon Aguiño y Jonathan Pérez.",
   "permissions": [
@@ -52,7 +52,7 @@
     }
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'self'; frame-src 'self'; connect-src 'self' http://127.0.0.1:8000 https://gmail.googleapis.com https://accounts.google.com https://oauth2.googleapis.com https://graph.microsoft.com https://login.microsoftonline.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:;"
+    "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'self'; frame-src 'self'; connect-src 'self' http://127.0.0.1:8000 https://gmail.googleapis.com https://accounts.google.com https://oauth2.googleapis.com https://graph.microsoft.com https://login.microsoftonline.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:;"
   },
   "web_accessible_resources": [
     {

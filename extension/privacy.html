@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Privacidad y permisos · NexoMail</title>
+<style>
+@font-face{font-family:'Inter Variable';font-style:normal;font-display:swap;font-weight:100 900;src:url(fonts/inter-latin-wght-normal.woff2) format('woff2');unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+2000-206F,U+20AC,U+2122,U+2212,U+FEFF,U+FFFD}
+@font-face{font-family:'Inter Variable';font-style:normal;font-display:swap;font-weight:100 900;src:url(fonts/inter-latin-ext-wght-normal.woff2) format('woff2');unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+1E00-1E9F,U+20A0-20AB,U+20AD-20C0}
+:root{color-scheme:light;--bg:#f3f6fa;--surface:#fff;--text:#182b43;--muted:#50627a;--border:#dbe3ee;--accent:#1c5ca8;--soft:#eaf1fb}
+@media (prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#101b2a;--surface:#172537;--text:#edf3fb;--muted:#b5c4d7;--border:#2d3d51;--accent:#a7ceff;--soft:#243c59}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.65 'Inter Variable','Segoe UI',-apple-system,sans-serif;-webkit-font-smoothing:antialiased}
+main{max-width:760px;margin:0 auto;padding:48px 24px 72px}
+header{display:flex;align-items:center;gap:14px;margin-bottom:8px}
+header img{width:44px;height:44px}
+h1{margin:0;font-size:30px;line-height:1.2;letter-spacing:-.02em}
+.meta{margin:6px 0 28px;color:var(--muted);font-size:14px}
+.summary{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px 24px;margin-bottom:32px}
+.summary h2{margin-top:0}
+h2{font-size:19px;letter-spacing:-.01em;margin:36px 0 10px}
+p,li{color:var(--text)}
+ul{padding-left:22px}
+li{margin:6px 0}
+table{width:100%;border-collapse:collapse;background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;font-size:15px}
+th,td{text-align:left;padding:12px 14px;border-bottom:1px solid var(--border);vertical-align:top}
+th{font-size:13px;color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:0}
+code{font-size:13px;background:var(--soft);padding:2px 6px;border-radius:5px;overflow-wrap:anywhere}
+a{color:var(--accent);text-underline-offset:3px}
+.note{color:var(--muted);font-size:14px}
+@media (max-width:600px){main{padding:28px 16px 48px}h1{font-size:24px}table{font-size:14px}th,td{padding:10px}}
+</style>
+</head>
+<body>
+<main>
+<header><img src="icons/nexomail.svg" alt=""><h1>Privacidad y permisos</h1></header>
+<p class="meta">NexoMail · Proyecto de tesis de Marlon Aguiño y Jonathan Pérez · Versión 1 · 5 de noviembre de 2026</p>
+
+<section class="summary" aria-labelledby="resumen">
+<h2 id="resumen">En resumen</h2>
+<ul>
+<li>NexoMail lee tus correos para mostrártelos, analizarlos y preparar acciones. <strong>Nada se envía, borra, mueve ni etiqueta sin tu aprobación</strong>, salvo lo que hagas tú directamente con los botones de la app.</li>
+<li>Tus credenciales de Google y Microsoft se guardan en la memoria temporal de la extensión, no en ningún servidor.</li>
+<li>El chat, los borradores, las preferencias y el historial se guardan en una base de datos PostgreSQL de <strong>tu propio equipo</strong>.</li>
+<li>Solo cuando usas la IA, tu petición y un extracto de los correos cargados se envían al proveedor configurado (Google Gemini u Ollama local).</li>
+<li>No vendemos datos, no mostramos publicidad y no usamos analítica ni rastreo.</li>
+</ul>
+</section>
+
+<h2>Qué datos se tratan</h2>
+<ul>
+<li><strong>Correo:</strong> remitente, destinatarios, asunto, fecha, contenido, etiquetas o categorías y nombres de adjuntos de los mensajes que se cargan.</li>
+<li><strong>Cuenta:</strong> la dirección de correo autorizada, para separar los datos de cada cuenta.</li>
+<li><strong>Uso de la app:</strong> los mensajes del chat, los borradores, tus preferencias y el historial de acciones.</li>
+<li><strong>Archivos que adjuntas en el chat:</strong> se leen en tu navegador y solo se incluyen en el correo que apruebes. La IA solo ve sus nombres, nunca su contenido.</li>
+</ul>
+
+<h2>Dónde se guardan</h2>
+<table>
+<thead><tr><th>Dato</th><th>Lugar</th><th>Cuánto tiempo</th></tr></thead>
+<tbody>
+<tr><td>Credenciales de Google y Microsoft</td><td>Memoria temporal de la extensión</td><td>Hasta cerrar el navegador. La sesión de Microsoft caduca a las 24 horas.</td></tr>
+<tr><td>Configuración (identificadores de aplicación, clave de enlace)</td><td>Almacenamiento local de la extensión</td><td>Hasta que la cambies o desinstales NexoMail</td></tr>
+<tr><td>Chat, borradores, preferencias e historial</td><td>PostgreSQL en tu equipo</td><td>Hasta que pulses «Vaciar datos» en Ajustes</td></tr>
+<tr><td>Correos y adjuntos</td><td>Permanecen en Gmail u Outlook. NexoMail solo los mantiene en memoria mientras los muestra.</td><td>Mientras la pestaña esté abierta</td></tr>
+</tbody>
+</table>
+
+<h2>Con quién se comparten</h2>
+<ul>
+<li><strong>Google (API de Gmail) y Microsoft (Microsoft Graph):</strong> para leer y gestionar tu correo con los permisos que concedes.</li>
+<li><strong>Proveedor de IA, solo si haces una consulta de IA:</strong> el servidor local envía tu petición, el historial reciente del chat y un extracto de los correos cargados.
+ Con <strong>Ollama</strong> todo se queda en tu equipo. Con <strong>Google Gemini</strong> los datos salen a Google; si usas su nivel gratuito, las condiciones de Google permiten usar ese contenido para mejorar sus productos. Si no lo deseas, desactiva la IA o usa Ollama.</li>
+<li>Nadie más. No hay terceros de publicidad ni de analítica.</li>
+</ul>
+<p>El uso de la información recibida de las API de Google se limita a las funciones que ves en NexoMail y sigue la Política de datos de usuario de los servicios de API de Google, incluidos sus requisitos de uso limitado.</p>
+
+<h2>Permisos que solicita</h2>
+<table>
+<thead><tr><th>Permiso</th><th>Para qué</th></tr></thead>
+<tbody>
+<tr><td><code>gmail.modify</code></td><td>Leer correos, etiquetarlos, moverlos a la papelera y recuperarlos. No permite borrar definitivamente.</td></tr>
+<tr><td><code>gmail.send</code></td><td>Enviar los correos que apruebes.</td></tr>
+<tr><td><code>User.Read</code> · <code>Mail.Read</code></td><td>Identificar tu cuenta de Microsoft y leer tus correos de Outlook.</td></tr>
+<tr><td><code>Mail.ReadWrite</code> · <code>Mail.Send</code></td><td>Mover, categorizar o enviar correos de Outlook. Se piden solo al aprobar la primera acción de ese tipo.</td></tr>
+<tr><td>Extensión: <code>identity</code>, <code>storage</code>, <code>activeTab</code></td><td>Abrir el inicio de sesión de Google y Microsoft, guardar la configuración y mostrar la burbuja en la pestaña de correo.</td></tr>
+<tr><td>Sitios: Gmail, Outlook y sus API</td><td>Mostrar la burbuja en tu correo y conectar con Google, Microsoft y el servidor local (<code>127.0.0.1:8000</code>).</td></tr>
+</tbody>
+</table>
+
+<h2>Tu control</h2>
+<ul>
+<li><strong>Aprobación humana:</strong> cada envío, eliminación, recuperación o clasificación propuesta por el agente espera tu aprobación.</li>
+<li><strong>Borrar tus datos:</strong> en Ajustes → Datos guardados → «Vaciar datos».</li>
+<li><strong>Retirar el acceso de Google:</strong> <a href="https://myaccount.google.com/connections" target="_blank" rel="noopener noreferrer">myaccount.google.com/connections</a>.</li>
+<li><strong>Retirar el acceso de Microsoft:</strong> cuentas personales en <a href="https://account.live.com/consent/Manage" target="_blank" rel="noopener noreferrer">account.live.com/consent/Manage</a>; cuentas de trabajo o centro educativo en <a href="https://myapps.microsoft.com" target="_blank" rel="noopener noreferrer">myapps.microsoft.com</a>.</li>
+<li><strong>Desinstalar:</strong> elimina la configuración y la memoria de la extensión. La base de datos PostgreSQL de tu equipo conserva los datos hasta que la vacíes.</li>
+</ul>
+
+<h2>Seguridad</h2>
+<ul>
+<li>El servidor local solo acepta conexiones de este equipo y exige la clave de enlace configurada.</li>
+<li>Los correos se muestran sin ejecutar su código. Las imágenes externas están bloqueadas y los enlaces piden confirmación.</li>
+<li>El análisis de seguridad es local y orientativo: no sustituye a un antivirus ni verifica el remitente.</li>
+</ul>
+
+<h2>Cambios y contacto</h2>
+<p>Si esta política cambia, NexoMail volverá a pedirte que la aceptes antes de conectar una cuenta. Para dudas, contacta con los autores del proyecto.</p>
+<p class="note">Este documento describe cómo funciona esta versión de NexoMail. No es asesoramiento legal.</p>
+</main>
+</body>
+</html>

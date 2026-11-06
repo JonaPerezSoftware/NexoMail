@@ -1,7 +1,11 @@
-import { useState, useEffect } from 'react';
-import { Send, Bot, User, Cpu, Sparkles, ChevronDown, ChevronRight, Mail, Trash2, Tag, PanelLeftClose, RotateCcw, AlertTriangle } from 'lucide-react';
-import type { AgentStep } from '../types/email';
+import { useState, useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
+import { Send, Sparkles, ChevronDown, ChevronRight, Mail, Tag, RotateCcw, AlertTriangle, Paperclip, X, FileText, Image as ImageIcon, Reply, ArrowDown, Lightbulb } from 'lucide-react';
+import type { AgentStep, MailFile } from '../types/email';
+import { parseStamp, messageStamp } from '../services/dates';
+import { CHAT_GREETING, QUICK_ACTIONS as SHARED_QUICK_ACTIONS, type QuickActionId } from '@shared/mail/chat-presets';
+import { MAX_ATTACHMENT_BYTES } from '../services/mailProvider';
 import { fetchLlmHealth, type LlmHealth } from '../services/llmClient';
+import { MAX_ATTACHMENT_LABEL } from '../services/platform';
 
 export interface Message {
   created_at?:string;
@@ -13,12 +17,15 @@ export interface Message {
 }
 
 interface AgentChatProps {
-  onSendPrompt: (prompt: string) => Promise<{ answer: string; steps: AgentStep[] }>;
+  onSendPrompt: (prompt: string, files: MailFile[]) => Promise<{ answer: string; steps: AgentStep[]; attachmentsUsed?: boolean }>;
   isProcessing: boolean;
   restoredMessages?: Message[] | null;
   onHistoryChange?: (messages:Message[])=>void;
-  onCollapse?: () => void;
   onClearHistory?: () => void;
+  /** True while the chat is on screen; it jumps to the latest message every time it is shown. */
+  active?: boolean;
+  /** A prompt sent from elsewhere in the app, such as «Responder con IA» in the mail tab. */
+  externalPrompt?: { id: string; text: string } | null;
 }
 
 interface QuickAction {
@@ -27,28 +34,9 @@ interface QuickAction {
   prompt: string;
 }
 
-const QUICK_ACTIONS: QuickAction[] = [
-  {
-    icon: Sparkles,
-    label: 'Resumir urgentes',
-    prompt: 'Hazme un resumen de los correos urgentes de hoy'
-  },
-  {
-    icon: Trash2,
-    label: 'Limpiar boletines',
-    prompt: 'Elimina los boletines y suscripciones de promociones'
-  },
-  {
-    icon: Mail,
-    label: 'Redactar confirmación',
-    prompt: 'Redacta una respuesta de confirmación a la transferencia bancaria'
-  },
-  {
-    icon: Tag,
-    label: 'Etiquetar trabajo',
-    prompt: 'Organiza los correos del proyecto con la etiqueta Trabajo'
-  }
-];
+/** Same requests and greeting as the Outlook chat. */
+const QUICK_ICONS: Record<QuickActionId, React.ComponentType<{ className?: string }>> = { urgent: Sparkles, unread: Mail, reply: Reply, label: Tag };
+const QUICK_ACTIONS: QuickAction[] = SHARED_QUICK_ACTIONS.map(action => ({ icon: QUICK_ICONS[action.id], label: action.label, prompt: action.prompt }));
 
 function formatModelDetails(llmHealth: LlmHealth | null) {
   if (!llmHealth || !llmHealth.configured) {
@@ -111,20 +99,107 @@ function formatModelDetails(llmHealth: LlmHealth | null) {
   };
 }
 
-export const AgentChat: React.FC<AgentChatProps> = ({ onSendPrompt, isProcessing, onCollapse, onClearHistory, restoredMessages, onHistoryChange }) => {
+const TOOL_NAMES: Record<string, string> = {
+  list_priority_emails: 'Revisar correos prioritarios',
+  search_emails: 'Buscar correos',
+  get_email_details: 'Leer un correo',
+  prepare_send_email: 'Preparar un envío',
+  prepare_delete_emails: 'Preparar el paso a la papelera',
+  prepare_restore_emails: 'Preparar una recuperación',
+  prepare_bulk_cleanup: 'Preparar una limpieza',
+  prepare_label_emails: 'Preparar un etiquetado',
+};
+
+const isFallbackStep = (step: AgentStep) => step.type === 'GUARDRAIL_CHECK' && /fallback|no disponible/i.test(step.message);
+
+/** Turns the engine's technical trace into short sentences a person can follow. */
+function describeStep(step: AgentStep): { label: string; text: string; tone: string } {
+  const tool = step.details?.tool as string | undefined;
+  const args = (step.details?.args ?? {}) as Record<string, unknown>;
+  switch (step.type) {
+    case 'TOOL_CALL': {
+      const name = (tool && TOOL_NAMES[tool]) || tool || 'Herramienta';
+      const ids = Array.isArray(args.email_ids) ? args.email_ids.length : 0;
+      const detail = typeof args.query === 'string' ? `«${args.query}»`
+        : typeof args.recipient === 'string' ? `para ${args.recipient}`
+        : ids ? `${ids} correo${ids === 1 ? '' : 's'}` : '';
+      return { label: 'Herramienta', text: detail ? `${name} · ${detail}` : name, tone: 'tool' };
+    }
+    case 'GUARDRAIL_CHECK': {
+      if (isFallbackStep(step)) {
+        const code = step.message.match(/HTTP (\d{3})/)?.[1];
+        return { label: 'Motor de reglas', text: `La IA no respondió${code ? ` (error ${code})` : ''}, así que se usó el motor de reglas local.`, tone: 'warn' };
+      }
+      if (/BLOQUEADO/i.test(step.message)) return { label: 'Bloqueado', text: step.message.replace(/^.*?BLOQUEADO:?\s*/i, '').replace(/^\(|\)$/g, '') || 'La acción no cumplió las reglas de seguridad.', tone: 'warn' };
+      if (/REQUIRES_APPROVAL/.test(step.message)) return { label: 'Seguridad', text: 'Requiere tu aprobación antes de ejecutarse.', tone: 'check' };
+      if (/SAFE_AUTO/.test(step.message)) return { label: 'Seguridad', text: 'Solo lectura: no cambia ningún correo.', tone: 'check' };
+      return { label: 'Seguridad', text: step.message, tone: 'check' };
+    }
+    case 'THINKING':
+      return { label: 'Análisis', text: /Modo local/i.test(step.message) ? 'Interpretando tu petición con reglas locales.' : 'Interpretando tu petición con la IA.', tone: 'think' };
+    case 'ACTION_CREATED':
+      return { label: 'Propuesta', text: 'Creada y enviada a Acciones para que la revises.', tone: 'action' };
+    default:
+      return { label: 'Respuesta', text: step.message, tone: 'think' };
+  }
+}
+
+/** Renders **bold** and *italic* as React nodes, so message text is never treated as HTML. */
+function inlineMarkdown(line: string): ReactNode[] {
+  return line.split(/(\*\*[^*]+\*\*|\*[^*\s][^*]*\*)/g).map((part, index) => {
+    if (part.startsWith('**') && part.endsWith('**') && part.length > 4) return <strong key={index}>{part.slice(2, -2)}</strong>;
+    if (part.startsWith('*') && part.endsWith('*') && part.length > 2) return <em key={index}>{part.slice(1, -1)}</em>;
+    return part;
+  });
+}
+
+export const AgentChat: React.FC<AgentChatProps> = ({ onSendPrompt, isProcessing, active = true, externalPrompt, onClearHistory, restoredMessages, onHistoryChange }) => {
   const [input, setInput] = useState('');
+  const [files, setFiles] = useState<MailFile[]>([]);
+  const [fileError, setFileError] = useState('');
+  const fileInput = useRef<HTMLInputElement>(null);
+  const filesSize = files.reduce((sum, file) => sum + file.size, 0);
+
+  /** Files are read in the browser and travel only with the approved message; the AI sees just their names. */
+  const addFiles = async (list: FileList | null) => {
+    setFileError('');
+    const picked = [...(list ?? [])];
+    if (!picked.length) return;
+    const total = filesSize + picked.reduce((sum, file) => sum + file.size, 0);
+    if (total > MAX_ATTACHMENT_BYTES) { setFileError(`Los adjuntos superan ${MAX_ATTACHMENT_LABEL} en total. Quita alguno o envía un enlace.`); return; }
+    try {
+      const read = await Promise.all(picked.map(file => new Promise<MailFile>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error(file.name));
+        reader.onload = () => resolve({ name: file.name, type: file.type || 'application/octet-stream', size: file.size, data: String(reader.result).split(',')[1] ?? '' });
+        reader.readAsDataURL(file);
+      })));
+      setFiles(prev => [...prev, ...read]);
+    } catch (error) {
+      setFileError(`No se pudo leer ${error instanceof Error ? error.message : 'el archivo'}.`);
+    } finally {
+      if (fileInput.current) fileInput.current.value = '';
+    }
+  };
+  const formatSize = (bytes: number) => bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   const [llmHealth, setLlmHealth] = useState<LlmHealth | null>(null);
   const [expandedSteps, setExpandedSteps] = useState<Record<string, boolean>>({});
 
   const initialMessage: Message = {
     id: 'm-1',
     sender: 'agent',
-    text: '¡Hola! Soy tu **Agente de IA para Gestión de Correo**. Puedo leer, clasificar, redactar y ejecutar acciones en lenguaje natural.\n\n🧠 *Recuerdo el contexto de nuestra conversación para responder preguntas de seguimiento.*\n🔒 *Todas las acciones sensibles requieren tu autorización mediante Guardrails.*',
+    text: CHAT_GREETING,
+    created_at: new Date().toISOString(),
     timestamp: new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })
   };
 
   const [messages, setMessages] = useState<Message[]>([initialMessage]);
-  useEffect(()=>{if(restoredMessages!==null && restoredMessages!==undefined)setMessages(restoredMessages.length?restoredMessages:[initialMessage]);},[restoredMessages]);
+  useEffect(()=>{
+    if(restoredMessages!==null && restoredMessages!==undefined){
+      const nonGreetings=restoredMessages.filter(m=>!m.id.startsWith('m-') && m.id!=='m-1');
+      setMessages(nonGreetings.length?[initialMessage,...nonGreetings]:[initialMessage]);
+    }
+  },[restoredMessages]);
   useEffect(()=>{onHistoryChange?.(messages);},[messages]);
 
   useEffect(() => {
@@ -133,6 +208,44 @@ export const AgentChat: React.FC<AgentChatProps> = ({ onSendPrompt, isProcessing
 
   const modelInfo = formatModelDetails(llmHealth);
   const userTurnCount = messages.filter(m => m.sender === 'user').length;
+  const scrollArea = useRef<HTMLDivElement>(null);
+  /** Suggested requests stay available after the conversation starts, behind a button next to the input. */
+  const [suggestOpen, setSuggestOpen] = useState(false);
+  const suggestRef = useRef<HTMLDivElement>(null);
+  const suggestButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!suggestOpen) return;
+    const onDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (!suggestRef.current?.contains(target) && !suggestButton.current?.contains(target)) setSuggestOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.stopPropagation(); setSuggestOpen(false); suggestButton.current?.focus(); } };
+    document.addEventListener('pointerdown', onDown);
+    document.addEventListener('keydown', onKey, true);
+    suggestRef.current?.querySelector('button')?.focus();
+    return () => { document.removeEventListener('pointerdown', onDown); document.removeEventListener('keydown', onKey, true); };
+  }, [suggestOpen]);
+  /** Shown once the person has scrolled away from the latest message. */
+  const [awayFromEnd, setAwayFromEnd] = useState(false);
+  const checkScroll = () => {
+    const area = scrollArea.current;
+    if (area) setAwayFromEnd(area.scrollHeight - area.scrollTop - area.clientHeight > 160);
+  };
+  const scrollToEnd = () => {
+    const area = scrollArea.current;
+    if (!area) return;
+    const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    area.scrollTo({ top: area.scrollHeight, behavior: reduce ? 'auto' : 'smooth' });
+  };
+  useLayoutEffect(() => {
+    if (!active) return;
+    const area = scrollArea.current;
+    if (!area) return;
+    area.scrollTop = area.scrollHeight;
+    // Restored history and fonts can change the height right after the first paint.
+    const frame = requestAnimationFrame(() => { area.scrollTop = area.scrollHeight; setAwayFromEnd(false); });
+    return () => cancelAnimationFrame(frame);
+  }, [active, messages.length, isProcessing]);
 
   const handleClear = () => {
     if (isProcessing) return;
@@ -140,6 +253,7 @@ export const AgentChat: React.FC<AgentChatProps> = ({ onSendPrompt, isProcessing
       {
         ...initialMessage,
         id: `m-${Date.now()}`,
+        created_at: new Date().toISOString(),
         timestamp: new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })
       }
     ]);
@@ -150,9 +264,17 @@ export const AgentChat: React.FC<AgentChatProps> = ({ onSendPrompt, isProcessing
   const toggleSteps = (msgId: string) => {
     setExpandedSteps(prev => ({
       ...prev,
-      [msgId]: prev[msgId] === undefined ? false : !prev[msgId]
+      [msgId]: !prev[msgId]
     }));
   };
+
+  const handledPrompt = useRef<string | null>(null);
+  useEffect(() => {
+    if (!externalPrompt || handledPrompt.current === externalPrompt.id || isProcessing) return;
+    handledPrompt.current = externalPrompt.id;
+    void handleSend(externalPrompt.text);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [externalPrompt, isProcessing]);
 
   const handleSend = async (textToSend?: string) => {
     const promptText = textToSend || input;
@@ -169,7 +291,9 @@ export const AgentChat: React.FC<AgentChatProps> = ({ onSendPrompt, isProcessing
     if (!textToSend) setInput('');
 
     try {
-      const res = await onSendPrompt(promptText);
+      const attached = textToSend ? [] : files;
+      const res = await onSendPrompt(promptText, attached);
+      if (res.attachmentsUsed) setFiles([]);
       const agentMsg: Message = {
         id: crypto.randomUUID(),created_at:new Date().toISOString(),
         sender: 'agent',
@@ -185,66 +309,6 @@ export const AgentChat: React.FC<AgentChatProps> = ({ onSendPrompt, isProcessing
 
   return (
     <div className="chat-container">
-      <div className="chat-header">
-        <div className="chat-header-main-row">
-          <div className="chat-header-title">
-            <Bot className="w-4 h-4 bot-icon" />
-            <h2>Chat del agente IA (Gmail)</h2>
-          </div>
-
-          <div className="chat-header-controls">
-            {/* Wide Screen Badge (Adapts full/compact via container queries) */}
-            <span
-              className={`badge-status header-badge-wide ${modelInfo.isConfigured ? 'connected' : ''}`}
-              title={modelInfo.tooltip}
-            >
-              <Sparkles className="w-3 h-3" />
-              <span className="model-text-full">{modelInfo.full}</span>
-              <span className="model-text-compact">{modelInfo.compact}</span>
-            </span>
-
-            {/* Reset / New conversation button */}
-            <button
-              onClick={handleClear}
-              disabled={isProcessing || userTurnCount === 0}
-              className="icon-button"
-              title="Reiniciar conversación y limpiar memoria del agente"
-              aria-label="Reiniciar chat"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-            </button>
-
-            {onCollapse && (
-              <button
-                onClick={onCollapse}
-                className="icon-button collapse-btn desktop-only"
-                title="Colapsar panel del Agente"
-                aria-label="Colapsar panel"
-              >
-                <PanelLeftClose className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Responsive Sub-bar: Appears gracefully when panel is narrow so model info is never clipped! */}
-        <div className="chat-header-subbar" title={modelInfo.tooltip}>
-          <div className={`model-subbar-pill ${modelInfo.isConfigured ? 'connected' : ''}`}>
-            <span className={`status-dot ${modelInfo.isConfigured ? 'active' : 'warning'}`} />
-            <span className="subbar-provider">{modelInfo.provider}:</span>
-            <span className="subbar-model">{modelInfo.compact}</span>
-          </div>
-
-          {userTurnCount > 0 ? (
-            <span className="subbar-badge" title="El agente recuerda los mensajes previos de esta sesión">
-              🧠 Memoria: {userTurnCount} {userTurnCount === 1 ? 'mensaje' : 'mensajes'}
-            </span>
-          ) : (
-            <span className="subbar-badge">Guardrails Activos</span>
-          )}
-        </div>
-      </div>
-
       {llmHealth?.isOllama && llmHealth?.warning && (
         <div className="ollama-notice-banner" role="alert">
           <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
@@ -252,60 +316,43 @@ export const AgentChat: React.FC<AgentChatProps> = ({ onSendPrompt, isProcessing
         </div>
       )}
 
-      <div className="chat-messages">
+      <div className="chat-messages" ref={scrollArea} onScroll={checkScroll}>
         {messages.map(msg => {
-          const isStepsExpanded = expandedSteps[msg.id] ?? true;
+          const isStepsExpanded = expandedSteps[msg.id] ?? false;
           return (
             <div key={msg.id} className={`chat-bubble-wrapper ${msg.sender}`}>
-              <div className="avatar" aria-hidden="true">
-                {msg.sender === 'user' ? (
-                  <User className="w-3.5 h-3.5" />
-                ) : (
-                  <Bot className="w-3.5 h-3.5" />
-                )}
-              </div>
-
               <div className="bubble-content">
                 {/* Reasoning trace disclosure */}
                 {msg.steps && msg.steps.length > 0 && (
-                  <div className="reasoning-accordion">
+                  <div className="trace">
                     <button
                       type="button"
                       onClick={() => toggleSteps(msg.id)}
-                      className="accordion-title w-full text-left bg-transparent border-0 cursor-pointer p-0"
+                      className="trace-toggle"
+                      aria-expanded={isStepsExpanded}
                     >
-                      {isStepsExpanded ? (
-                        <ChevronDown className="w-3.5 h-3.5" />
-                      ) : (
-                        <ChevronRight className="w-3.5 h-3.5" />
-                      )}
-                      <Cpu className="w-3.5 h-3.5" />
-                      <span>Trazabilidad de Razonamiento ({msg.steps.length} pasos)</span>
+                      {isStepsExpanded ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
+                      <span>Cómo lo resolvió</span>
+                      <span className="trace-count">{msg.steps.length} {msg.steps.length === 1 ? 'paso' : 'pasos'}</span>
+                      {msg.steps.some(isFallbackStep) && <span className="trace-flag">Sin IA</span>}
                     </button>
 
                     {isStepsExpanded && (
-                      <div className="steps-list mt-2">
-                        {msg.steps.map((step, idx) => (
-                          <div key={idx} className="step-item">
-                            <div className="step-header">
-                              {step.type === 'THINKING' && (
-                                <span className="step-badge thinking">Pensamiento</span>
-                              )}
-                              {step.type === 'TOOL_CALL' && (
-                                <span className="step-badge tool">Herramienta</span>
-                              )}
-                              {step.type === 'GUARDRAIL_CHECK' && (
-                                <span className="step-badge guardrail">Guardrail</span>
-                              )}
-                              {step.type === 'ACTION_CREATED' && (
-                                <span className="step-badge action">Firma Requerida</span>
-                              )}
-                              <span className="step-time">{step.timestamp}</span>
-                            </div>
-                            <p className="step-msg">{step.message}</p>
-                          </div>
-                        ))}
-                      </div>
+                      <ol className="trace-steps">
+                        {msg.steps.map((step, idx) => {
+                          const view = describeStep(step);
+                          return (
+                            <li key={idx} className={`trace-step trace-${view.tone}`}>
+                              <span className="trace-dot" aria-hidden="true" />
+                              <div className="trace-body">
+                                <span className="trace-label">{view.label}</span>
+                                <span className="trace-text">{view.text}</span>
+                              </div>
+                              <time className="trace-time">{step.timestamp.slice(0, 5)}</time>
+                            </li>
+                          );
+                        })}
+                      </ol>
                     )}
                   </div>
                 )}
@@ -313,12 +360,14 @@ export const AgentChat: React.FC<AgentChatProps> = ({ onSendPrompt, isProcessing
                 <div className="message-text">
                   {msg.text.split('\n').map((line, i) => (
                     <p key={i} className={line.trim() === '' ? 'h-2' : 'mb-1'}>
-                      {line}
+                      {inlineMarkdown(line)}
                     </p>
                   ))}
                 </div>
 
-                <span className="message-time">{msg.timestamp}</span>
+                {(() => { const date = parseStamp(msg.created_at); return date
+                  ? <time className="message-time" dateTime={date.toISOString()} title={date.toLocaleString('es-ES', { dateStyle: 'full', timeStyle: 'short' })}>{messageStamp(date)}</time>
+                  : <span className="message-time">{msg.timestamp}</span>; })()}
               </div>
             </div>
           );
@@ -326,46 +375,100 @@ export const AgentChat: React.FC<AgentChatProps> = ({ onSendPrompt, isProcessing
 
         {isProcessing && (
           <div className="chat-bubble-wrapper agent">
-            <div className="avatar" aria-hidden="true">
-              <Bot className="w-3.5 h-3.5" />
-            </div>
             <div className="bubble-content">
-              <div className="flex items-center gap-2 text-xs text-slate-300">
-                <Cpu className="w-3.5 h-3.5 animate-spin text-sky-400" />
+              <div className="chat-working">
                 <span>Ejecutando guardrails y procesando consulta...</span>
               </div>
             </div>
           </div>
         )}
-      </div>
 
-      {/* Structured quick actions */}
-      <div className="quick-prompts">
-        {QUICK_ACTIONS.map((action, idx) => {
-          const Icon = action.icon;
-          return (
-            <button
-              key={idx}
-              disabled={isProcessing}
-              onClick={() => handleSend(action.prompt)}
-              className="chip-prompt"
-              title={action.prompt}
-            >
-              <Icon className="w-3.5 h-3.5 chip-icon" />
-              <span>{action.label}</span>
-            </button>
-          );
-        })}
+        {userTurnCount === 0 && !isProcessing && !suggestOpen && (
+          <div className="quick-prompts">
+            {QUICK_ACTIONS.map((action, idx) => {
+              const Icon = action.icon;
+              return (
+                <button
+                  key={idx}
+                  type="button"
+                  onClick={() => handleSend(action.prompt)}
+                  className="chip-prompt"
+                  title={action.prompt}
+                >
+                  <Icon className="w-3.5 h-3.5 chip-icon" />
+                  <span>{action.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
+      <div className="chat-jump-anchor">{awayFromEnd && <button type="button" className="chat-jump" onClick={scrollToEnd} aria-label="Ir al último mensaje" title="Ir al último mensaje"><ArrowDown aria-hidden="true"/></button>}</div>
+
+      {(files.length > 0 || fileError) && (
+        <div className="chat-files" aria-live="polite">
+          {files.map((file, index) => (
+            <span key={index} className="chat-file">
+              {file.type.startsWith('image/') ? <ImageIcon aria-hidden="true" /> : <FileText aria-hidden="true" />}
+              <span className="chat-file-name">{file.name}</span>
+              <span className="chat-file-size">{formatSize(file.size)}</span>
+              <button type="button" onClick={() => setFiles(prev => prev.filter((_, i) => i !== index))} aria-label={`Quitar ${file.name}`}><X aria-hidden="true" /></button>
+            </span>
+          ))}
+          {fileError && <span className="chat-file-error" role="alert">{fileError}</span>}
+        </div>
+      )}
+
+      {suggestOpen && (
+        <div className="chat-suggest" id="chat-suggest" ref={suggestRef} role="group" aria-label="Sugerencias">
+          <span className="chat-suggest-title">Sugerencias</span>
+          <div className="chat-suggest-list">
+            {QUICK_ACTIONS.map((action, idx) => {
+              const Icon = action.icon;
+              return (
+                <button key={idx} type="button" className="chip-prompt" title={action.prompt} disabled={isProcessing}
+                  onClick={() => { setSuggestOpen(false); handleSend(action.prompt); }}>
+                  <Icon className="w-3.5 h-3.5 chip-icon" />
+                  <span>{action.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       <div className="chat-input-area">
+        <button
+          ref={suggestButton}
+          type="button"
+          onClick={() => setSuggestOpen(open => !open)}
+          disabled={isProcessing}
+          className="attach-button suggest-button"
+          aria-expanded={suggestOpen}
+          aria-controls="chat-suggest"
+          title="Sugerencias de acciones"
+          aria-label="Sugerencias de acciones"
+        >
+          <Lightbulb aria-hidden="true" />
+        </button>
+        <input ref={fileInput} type="file" multiple hidden onChange={e => void addFiles(e.target.files)} />
+        <button
+          type="button"
+          onClick={() => fileInput.current?.click()}
+          disabled={isProcessing}
+          className="attach-button"
+          title="Adjuntar archivos o imágenes al correo que prepare el agente"
+          aria-label="Adjuntar archivos"
+        >
+          <Paperclip aria-hidden="true" />
+        </button>
         <input
           type="text"
           value={input}
           disabled={isProcessing}
           onChange={e => setInput(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && handleSend()}
-          placeholder="Escribe una instrucción (ej. 'Resume los correos urgentes')..."
+          placeholder={files.length ? "¿A quién envío los archivos?" : "Escribe una instrucción…"}
           className="chat-input"
           aria-label="Mensaje para el agente"
         />
@@ -376,8 +479,28 @@ export const AgentChat: React.FC<AgentChatProps> = ({ onSendPrompt, isProcessing
           title="Enviar instrucción (Enter)"
           aria-label="Enviar"
         >
-          <Send className="w-3.5 h-3.5" />
+          <Send className="w-4 h-4" />
         </button>
+      </div>
+
+      <div className="chat-meta">
+        <span className="chat-meta-engine" title={modelInfo.tooltip}>
+          <span className={`status-dot ${modelInfo.isConfigured ? 'active' : 'warning'}`} />
+          {modelInfo.provider}: {modelInfo.compact}
+          {userTurnCount > 0 && <> · Memoria: {userTurnCount} {userTurnCount === 1 ? 'mensaje' : 'mensajes'}</>}
+        </span>
+        {userTurnCount > 0 && (
+          <button
+            type="button"
+            onClick={handleClear}
+            disabled={isProcessing}
+            className="chat-meta-reset"
+            title="Reiniciar conversación y limpiar memoria del agente"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            Nueva conversación
+          </button>
+        )}
       </div>
     </div>
   );

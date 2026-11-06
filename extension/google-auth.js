@@ -60,7 +60,7 @@ export async function installGoogleAuth(host){
     const blocked=(await chrome.storage.local.get(BLOCKED))[BLOCKED] || {};
     if(blocked[keyFor(account.email,account.clientId)])throw new Error('La cuenta se desconectó durante la recuperación.');
     const all=await records();all[keyFor(account.email,account.clientId)]=account;
-    await chrome.storage.local.set({[ACCOUNTS]:all});
+    await chrome.storage.local.set({[ACCOUNTS]:all,[META]:account});
     const tokens=(await chrome.storage.session.get(TOKENS))[TOKENS] || {};
     tokens[account.sessionId]={...auth,sessionId:account.sessionId};await chrome.storage.session.set({[TOKENS]:tokens});
     return {...auth,...account};
@@ -77,12 +77,13 @@ export async function installGoogleAuth(host){
   host.googleRestore=async(context)=>{
     const clientId=host.config.googleClientId;
     const all=await records();
-    // An embedded module never guesses which of several site accounts to use.
-    const expected=context?.email || (!context?(await chrome.storage.local.get(META))[META]?.email:'');
+    const storedMeta=(await chrome.storage.local.get(META))[META];
+    const singleAccount=Object.values(all).length===1?Object.values(all)[0]:null;
+    const expected=context?.email || storedMeta?.email || singleAccount?.email || '';
     if(!expected || !clientId)return null;
-    let account=all[keyFor(expected,clientId)];
+    let account=all[keyFor(expected,clientId)] || (singleAccount && singleAccount.clientId===clientId?singleAccount:null);
     const blocked=(await chrome.storage.local.get(BLOCKED))[BLOCKED] || {};
-    if(blocked[keyFor(expected,clientId)])return null;
+    if(account && blocked[keyFor(account.email,account.clientId)])return null;
     if(!account){
       try{const auth=await authorize(clientId,{interactive:false,email:expected});account={clientId,email:auth.email,sessionId:crypto.randomUUID()};return await store(auth,account);}catch{return null;}
     }
