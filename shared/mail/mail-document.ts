@@ -19,7 +19,7 @@ export function mailDocument(html:string,images=false):{document:string;links:{h
       if(!attrs.has(attribute.name.toLowerCase()))element.removeAttribute(attribute.name);
     }
     if(element.hasAttribute('style'))element.setAttribute('style',css(element.getAttribute('style') || ''));
-    if(tag==='a' && href)element.setAttribute('title',href);
+    if(tag==='a' && href)element.setAttribute('title','Este enlace no se abre desde aquí. Ábrelo en «Enlaces del mensaje», debajo del correo, donde NexoMail lo revisa antes.\nDestino: '+href);
     if(tag==='img'){
       const tiny=['width','height'].some(name=>{const value=Number(element.getAttribute(name));return element.hasAttribute(name) && value>=0 && value<=2;});
       if(!images || tiny || !image.startsWith('https:')){element.remove();continue;}
@@ -27,5 +27,5 @@ export function mailDocument(html:string,images=false):{document:string;links:{h
     }
   }
   const policy="default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src "+(images?'https:':"'none'")+"; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'";
-  return {document:'<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="'+policy+'"><meta name="referrer" content="no-referrer"><style>html,body{margin:0;padding:0;background:#fff;color:#202124;font:14px/1.6 Arial,sans-serif;overflow-wrap:anywhere}body{padding:16px;box-sizing:border-box}img{max-width:100%!important;height:auto!important}table{max-width:100%!important}pre{white-space:pre-wrap}a{color:#1769aa;text-decoration:underline;cursor:default}*{box-sizing:border-box}</style></head><body>'+template.innerHTML+'</body></html>',links:links.slice(0,100)};
+  return {document:'<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="'+policy+'"><meta name="referrer" content="no-referrer"><style>html,body{margin:0;padding:0;background:#fff;color:#202124;font:14px/1.6 Arial,sans-serif;overflow-wrap:anywhere}body{padding:16px;box-sizing:border-box}img{max-width:100%!important;height:auto!important}table{max-width:100%!important}pre{white-space:pre-wrap}a{color:#1769aa;text-decoration:underline dotted;cursor:help}*{box-sizing:border-box}</style></head><body>'+template.innerHTML+'</body></html>',links:links.slice(0,100)};
 }

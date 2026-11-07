@@ -43,6 +43,7 @@ if(!['gmail','outlook'].includes(provider) || !bridge || !allowedOrigins.has(par
       if(event.data.section==='mail' && !expanded)sendSection();
     }
     if(event.data.type==='EMAILAGENT_MINIMIZE')window.parent.postMessage({type:'EMAILAGENT_MINIMIZE',bridge},parentOrigin);
+    if(event.data.type==='EMAILAGENT_EXPAND')window.parent.postMessage({type:'EMAILAGENT_EXPAND',bridge},parentOrigin);
   });
   window.parent.postMessage({type:'EMAILAGENT_DISPLAY_READY',bridge},parentOrigin);
   document.addEventListener('keydown',event=>{if(event.key==='Escape')window.parent.postMessage({type:'EMAILAGENT_MINIMIZE',bridge},parentOrigin);});

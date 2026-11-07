@@ -85,3 +85,11 @@ for(const button of document.querySelectorAll('[data-copy]')){
 }
 
 init().catch(()=>setNote('status','No se pudo cargar la configuración.','error'));
+
+$('reload').addEventListener('click',async()=>{
+  const dirty=document.querySelector('.op-savebar')?.hasAttribute('data-dirty');
+  if(!window.confirm((dirty?'Tienes cambios sin guardar en esta página y se perderán.\n\n':'')+'Se recargará NexoMail. Las pestañas de Gmail y Outlook no se recargan: NexoMail se vuelve a conectar en ellas.\n\n¿Recargar ahora?'))return;
+  const button=$('reload');button.disabled=true;button.textContent='Recargando…';setNote('reloadStatus','');
+  try{const result=await chrome.runtime.sendMessage({type:'NEXOMAIL_RELOAD_EXTENSION'});if(!result?.ok)throw new Error(result?.error);}
+  catch{button.disabled=false;button.textContent='Recargar extensión';setNote('reloadStatus','No se pudo recargar. Hazlo desde chrome://extensions.','error');}
+});

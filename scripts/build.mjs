@@ -8,4 +8,4 @@ function run(app,cli,args){const cwd=path.join(root,'apps',app);const executable
 run('gmail','typescript/bin/tsc',['-b']);
 run('gmail','vite/bin/vite.js',['build','--outDir',path.join(root,'extension/apps/gmail'),'--emptyOutDir']);
 run('gmail','vite/bin/vite.js',['build','--mode','outlook','--outDir',path.join(root,'extension/apps/outlook'),'--emptyOutDir']);
-console.log('Extensión compilada. Recárgala desde la página de extensiones del navegador.');
+console.log('Extensión compilada. Recárgala con «Recargar» en Ajustes de NexoMail (o en las opciones de la extensión, o en chrome://extensions).');

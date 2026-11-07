@@ -384,6 +384,8 @@ No se guardan correos, tokens ni adjuntos. Las propuestas pendientes **sí se re
 
 Si solo cambias archivos de `extension/` (por ejemplo `options.html` o `content.js`), basta con **Recargar** la extensión.
 
+**Recargar sin salir de NexoMail:** en **Ajustes → Acerca de NexoMail → Recargar**, o en la página de opciones de la extensión → **Recargar extensión**. Chrome vuelve a leer los archivos de `extension/` (sirve tras `RECOMPILAR.cmd`), y solo se recarga la pestaña desde la que pulsaste el botón. En las demás pestañas de Gmail y Outlook, NexoMail se vuelve a conectar sin recargar la página (para eso usa el permiso `scripting`). Si lo pulsaste en las opciones o en NexoMail a pantalla completa, esa página se vuelve a abrir. La primera vez, como la versión instalada aún no tiene el botón, hay que recargar desde `chrome://extensions`.
+
 ### Compilar a mano
 ```bash
 cd apps/gmail
@@ -410,7 +412,7 @@ Implementa la interfaz `MailProvider` de `apps/gmail/src/services/mailProvider.t
 | «No hay conexión» con el servidor | Ejecuta `INICIAR_SERVIDOR.cmd` y comprueba que la clave de enlace coincide con `backend/.env`. |
 | «Gmail limitó temporalmente las peticiones» | Es el límite por minuto de Google para tu cuenta. Espera un minuto: si ocurrió al aprobar, la propuesta sigue en Acciones para aprobarla de nuevo. NexoMail reutiliza los correos ya descargados para gastar poco de ese límite. |
 | Error 503 «high demand» de Gemini | Es saturación temporal de Google. El servidor reintenta y, si sigue fallando, responde el motor de reglas. |
-| No veo los cambios tras actualizar | Ejecuta `RECOMPILAR.cmd`, pulsa **Recargar** en `chrome://extensions` y recarga la pestaña. |
+| No veo los cambios tras actualizar | Ejecuta `RECOMPILAR.cmd` y pulsa **Recargar** en Ajustes de NexoMail (o en `chrome://extensions` y luego recarga la pestaña). |
 | Correo «aceptado» pero no recibido | Que el proveedor acepte el envío no garantiza la entrega. Revisa la bandeja de entrada por si hay avisos de rebote. |
 | Outlook: un correo no se marca como leído | Falta el permiso de escritura. Se concede la primera vez que apruebas una acción en Outlook. |
 

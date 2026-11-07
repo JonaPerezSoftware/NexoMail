@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Mail, MailCheck, Search, Trash2, ShieldCheck, ArrowLeft, RefreshCw, Undo2, Tag, Folder, PenSquare, Reply, Sparkles, MoreHorizontal, FileText, Pencil, Loader2 } from 'lucide-react';
 import {MailDocument} from './MailDocument';
 import { MailSafety } from './MailSafety';
@@ -26,6 +26,8 @@ interface Props {
   onCompose:(prefill?:{to:string;subject:string})=>void;onReplyWithAI:(email:Email)=>void;
   onRestore:(ids:string[])=>Promise<void>;onSetCategory:(email:Email,category:string|null)=>Promise<void>;
   loadLimit:number;maxLoaded:number;onLoadMore:()=>void;loadingMore:boolean;connected:boolean;
+  /** A mail to open, asked for from the chat. The nonce lets the same mail be opened twice. */
+  focus?:{id:string;nonce:number}|null;
   onListAttachments:(email:Email)=>Promise<MailAttachment[]>;onDownloadAttachment:(email:Email,attachment:MailAttachment)=>Promise<Blob>;
 }
 const categories=['Todos','Sin leer','Trabajo','Personal','Importante','Finanzas','Boletines','Sin clasificar','Con alertas'];
@@ -41,6 +43,12 @@ export function EmailInbox(p:Props){
   const [busy,setBusy]=useState(false);
   /** Which reader action is running, to show its own label ("Recuperando…", "Guardando…"). */
   const [busyWhat,setBusyWhat]=useState('');
+  useEffect(()=>{
+    if(!p.focus)return;
+    setQuery('');setSelectedId(p.focus.id);
+    if(emails.some(email=>email.id===p.focus?.id && !email.read))void onMarkRead(p.focus.id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[p.focus]);
   const inTrash=folder==='trash',inSent=folder==='sent',inDrafts=folder==='drafts';
   const source=folder==='inbox'?emails:(p.folderEmails ?? []);
   const loading=folder!=='inbox' && !inDrafts && p.folderLoading && !p.folderEmails;
@@ -64,6 +72,12 @@ export function EmailInbox(p:Props){
   return <div className={`gmail-inbox mx-inbox ${selected?'reader-open':''}`}>
     <div className="ox-mailhead">
       <div className="mx-title"><h2>{folderName}</h2><span>{subtitle}</span></div>
+      {/* Search and grouping share the title row, so the list and the reader get the height. Sync lives in the top bar. */}
+      {!inDrafts && <><label className="mx-search"><Search aria-hidden="true"/><input value={query} onChange={event=>setQuery(event.target.value)} placeholder="Buscar por asunto, remitente o contenido" aria-label="Buscar en correos"/></label>
+        {!inTrash && <label className="mx-toggle" title={`Reglas locales. No cambia las etiquetas de ${MAIL}. Se revisa cada 60 s con la vista activa. Las clasificaciones manuales siempre se respetan.`}>
+          <input type="checkbox" role="switch" className="st-switch" checked={automatic} onChange={e=>onAutomaticChange(e.target.checked)}/>
+          <span>Agrupar automáticamente</span>
+        </label>}</>}
       <label className="ox-location"><span className="visually-hidden">Carpeta</span><Folder aria-hidden="true"/>
         <select aria-label="Carpeta" value={folder} onChange={event=>{setSelectedId(null);p.onSelectFolder(event.target.value as MailFolder);}}>
           {MAIL_FOLDERS.map(f=><option key={f.id} value={f.id}>{f.name}</option>)}
@@ -82,14 +96,6 @@ export function EmailInbox(p:Props){
           </li>)}</ul>}
     </div> : <>
     <div className="gmail-inbox-toolbar mx-toolbar ox-filters">
-      <div className="mx-toolbar-row">
-        <label className="mx-search"><Search aria-hidden="true"/><input value={query} onChange={event=>setQuery(event.target.value)} placeholder="Buscar por asunto, remitente o contenido" aria-label="Buscar en correos"/></label>
-        <button type="button" className="pa-btn pa-btn-secondary" onClick={p.onRefresh} disabled={p.refreshing} title={`Sincronizar con ${MAIL}`}><RefreshCw aria-hidden="true" className={p.refreshing?'spin':''}/>Sincronizar</button>
-        {!inTrash && <label className="mx-toggle" title={`Reglas locales. No cambia las etiquetas de ${MAIL}. Se revisa cada 60 s con la vista activa. Las clasificaciones manuales siempre se respetan.`}>
-          <input type="checkbox" role="switch" className="st-switch" checked={automatic} onChange={e=>onAutomaticChange(e.target.checked)}/>
-          <span>Agrupar automáticamente</span>
-        </label>}
-      </div>
       <nav className="mx-chips" aria-label="Filtrar correos">{categories.map(category=>{const n=count(category);return <button type="button" key={category} className="mx-chip" onClick={()=>{setSelectedId(null);onSelectCategory(category);}} aria-pressed={selectedCategory===category}>{category}{n!==null && <span>{n}</span>}</button>;})}</nav>
     </div>
 

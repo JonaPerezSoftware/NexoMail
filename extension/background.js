@@ -42,3 +42,34 @@ chrome.tabs.onUpdated.addListener((id,change,tab)=>{if(change.status==='complete
 chrome.runtime.onMessage.addListener((message,sender,reply)=>{
   if(message?.type==='EMAILAGENT_OPTIONS' && sender.id===chrome.runtime.id && sender.tab?.id && detectPlatform(sender.url)){chrome.runtime.openOptionsPage().then(()=>reply({ok:true}));return true;}
 });
+// Reload requested from NexoMail's own pages. Chrome re-reads the files from disk, so a fresh build applies without chrome://extensions.
+const RELOAD_KEY='nexomail.reload';
+const MAIL_TABS=chrome.runtime.getManifest().content_scripts.flatMap(script=>script.matches);
+chrome.runtime.onMessage.addListener((message,sender,reply)=>{
+  if(message?.type!=='NEXOMAIL_RELOAD_EXTENSION')return;
+  if(sender.id!==chrome.runtime.id || !sender.url?.startsWith(chrome.runtime.getURL('')))return;
+  // Only the place the button was pressed is reloaded: the mail tab holding the floating panel,
+  // or the NexoMail page itself (extension pages close on reload, so it is opened again).
+  const fromPanel=sender.frameId!==0 && sender.tab?.id!==undefined && detectPlatform(sender.tab.url);
+  const plan={at:Date.now(),reloadTab:fromPanel?sender.tab.id:null,reopenUrl:fromPanel?null:sender.url};
+  chrome.storage.local.set({[RELOAD_KEY]:plan})
+    .then(()=>{reply({ok:true});setTimeout(()=>chrome.runtime.reload(),200);})
+    .catch(()=>reply({ok:false,error:'No se pudo recargar la extensión.'}));
+  return true;
+});
+// After a reload the scripts left in open mail tabs are disconnected. The tab where the reload was asked for is
+// refreshed; the others get NexoMail injected again in place, without reloading the page.
+chrome.storage.local.get(RELOAD_KEY).then(async stored=>{
+  const plan=stored[RELOAD_KEY];
+  if(!plan)return;
+  await chrome.storage.local.remove(RELOAD_KEY);
+  if(Date.now()-plan.at>60000)return;
+  const tabs=await chrome.tabs.query({url:MAIL_TABS});
+  await Promise.all(tabs.map(async tab=>{
+    if(!tab.id)return;
+    if(tab.id===plan.reloadTab){await chrome.tabs.reload(tab.id).catch(()=>{});return;}
+    if(tab.status!=='complete' || tab.discarded)return;
+    await chrome.scripting.executeScript({target:{tabId:tab.id},files:['page-account.js','content.js']}).catch(()=>{});
+  }));
+  if(plan.reopenUrl?.startsWith(chrome.runtime.getURL('')))await chrome.tabs.create({url:plan.reopenUrl}).catch(()=>{});
+}).catch(()=>{});

@@ -7,6 +7,12 @@ import { consentHistory, openPrivacyPolicy } from './PrivacyConsent';
 import { BusyButton } from './BusyButton';
 import { MAIL, ACCOUNT, PLATFORM, MAIL_COUNT_OPTIONS } from '../services/platform';
 interface Props {view:'summary'|'settings';emails:Email[];pendingCount:number;logCount:number;theme:'dark'|'light';strictMode:boolean;onToggleTheme:()=>void;onToggleStrictMode:()=>void;onAuthorize:()=>void|Promise<void>;authorizing?:boolean;connected:boolean;mailCount:number;onMailCount:(value:number)=>void;storageStatus:string;storageReady:boolean;onEraseStorage:()=>void|Promise<void>}
+/** Chrome re-reads the extension from disk; the open mail tabs are refreshed afterwards by the background worker. */
+async function reloadExtension(){
+  if(!window.confirm('Se recargará NexoMail y esta pestaña del correo. Lo que estés escribiendo en ella sin guardar puede perderse. En las demás pestañas de Gmail y Outlook, NexoMail se vuelve a conectar sin recargarlas.\n\n¿Recargar ahora?'))return;
+  try{await window.emailAgentHost.reloadExtension();await new Promise(()=>{});}
+  catch{window.alert('No se pudo recargar. Hazlo desde chrome://extensions.');}
+}
 /** Microsoft only accepts sign-ins that return to an address registered as a single-page application. */
 function MicrosoftRedirect(){
   const [status,setStatus]=useState('');
@@ -51,6 +57,7 @@ export function WorkspacePages(p:Props){
     </section>
     <section className="st-group" aria-labelledby="st-about"><h3 id="st-about">Acerca de NexoMail</h3>
       <div className="st-row"><div className="st-text"><strong>Proyecto de tesis de Marlon Aguiño y Jonathan Pérez</strong><small>Con PostgreSQL conectado se guardan el chat, los borradores y el historial de cada cuenta. Las propuestas pendientes no se ejecutan al recargar. Los mensajes reales se consultan mediante la API de {MAIL}.</small></div></div>
+      <div className="st-row"><span className="st-icon" aria-hidden="true"><RefreshCw/></span><div className="st-text"><strong>Recargar la extensión</strong><small>Aplica una versión recién compilada sin entrar en chrome://extensions. Se recarga esta pestaña; en las demás pestañas de correo NexoMail se vuelve a conectar sin recargarlas. Con PostgreSQL conectado, el chat y las acciones pendientes se conservan.</small></div><BusyButton className="pa-btn pa-btn-secondary" busyLabel="Recargando…" onClick={reloadExtension}>Recargar</BusyButton></div>
     </section>
   </div></section>;
 }

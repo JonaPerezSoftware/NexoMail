@@ -8,6 +8,7 @@ const HINTS: Record<string,string> = {
   unauthorized_client: 'La aplicación no admite este tipo de cuenta. Permite cuentas personales y de cualquier organización en Microsoft Entra.',
   interaction_in_progress: 'Quedó una autorización anterior sin terminar. Recarga la pestaña del correo y vuelve a intentarlo.',
   state_mismatch: 'La respuesta no corresponde a esta ventana. Recarga la pestaña del correo y vuelve a intentarlo.',
+  monitor_window_timeout: 'Microsoft no respondió a tiempo al renovar el permiso. Vuelve a intentarlo.',
   no_token_request_cache_error: 'Se perdió la autorización en curso. Recarga la pestaña del correo y vuelve a intentarlo.',
 };
 
@@ -21,4 +22,9 @@ export function describeMicrosoftError(error: {errorCode?: string; errorMessage?
   if (!code) return text || 'Microsoft no completó el acceso y no indicó el motivo.';
   const hint = HINTS[code];
   return hint ? `${hint} (${code})` : `Microsoft no completó el acceso (${code}). ${text}`.trim();
+}
+
+/** NexoMail stopped while asking Microsoft for permission, before calling Outlook: the action was not carried out. */
+export class AuthorizationError extends Error {
+  readonly authorization = true;
 }

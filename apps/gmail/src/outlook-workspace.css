@@ -441,3 +441,72 @@ a.pa-btn{text-decoration:none}
 @keyframes chat-suggest-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 @media (prefers-reduced-motion:reduce){.chat-suggest{animation:none}}
 @media(max-width:420px){.outlook-layout .chat-input-area .attach-button{width:42px;height:42px}}
+
+/* ---- Compact chrome: more height for the mail list and the reader ---- */
+/* Top bar: status chips grouped on the right (risk, approvals, sync). The risk list opens as a panel anchored to
+   the whole bar, so it never runs off the edge of the small window. */
+.outlook-layout .workspace-topbar{position:relative;z-index:30}
+.outlook-layout .workspace-topbar-actions{min-width:0}
+.outlook-layout .workspace-topbar .risk-pop{position:static;max-width:100%;padding:0;margin:0;border:0;background:none;font-size:13px}
+.outlook-layout .workspace-topbar .risk-pop>summary{list-style:none;display:inline-flex;align-items:center;gap:6px;max-width:100%;height:30px;padding:0 10px;border:1px solid color-mix(in srgb,var(--pa-danger) 30%,transparent);border-radius:7px;background:color-mix(in srgb,var(--pa-danger) 8%,var(--bg-surface));color:var(--pa-danger);font-size:12px;font-weight:600;white-space:nowrap;cursor:pointer}
+.outlook-layout .workspace-topbar .risk-pop>summary::-webkit-details-marker{display:none}
+.outlook-layout .workspace-topbar .risk-pop>summary:hover,.outlook-layout .workspace-topbar .risk-pop[open]>summary{border-color:var(--pa-danger)}
+.outlook-layout .workspace-topbar .risk-pop>summary:focus-visible{outline:2px solid var(--accent-primary);outline-offset:2px}
+.risk-pop>summary svg{width:14px;height:14px;flex:0 0 auto}
+.outlook-layout button.workspace-pending-count{height:30px;padding:0 10px}
+.risk-pop-panel{position:absolute;top:calc(100% + 6px);left:12px;right:12px;margin-inline:auto;max-width:600px;max-height:min(60vh,520px);overflow:auto;padding:12px 16px;border:1px solid var(--border-default);border-radius:10px;background:var(--bg-surface);box-shadow:0 12px 32px rgba(0,0,0,.22);color:var(--text-primary);font-size:13px;font-weight:400;line-height:1.45;white-space:normal;z-index:60}
+.risk-pop-panel>ul{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:8px}
+.risk-pop-panel ul ul{margin:2px 0 0;padding-left:16px;color:var(--text-secondary);overflow-wrap:anywhere}
+.risk-pop-panel p{margin:10px 0 0;color:var(--text-secondary)}
+.risk-pop-panel .md-mail-link{display:inline;padding:0;border:0;background:none;font:inherit;font-weight:600;color:var(--accent-primary-text);text-align:left;text-decoration:underline;text-underline-offset:3px;cursor:pointer}
+/* Short labels where the bar is narrow (the floating window). */
+.lbl-short{display:none}
+@media(max-width:900px){.lbl-long{display:none}.lbl-short{display:inline}}
+@media(max-width:520px){.workspace-sync-note{display:none}}
+
+/* Mail header: title, search, grouping, folder and compose in one row (wraps when narrow); filters right below. */
+.outlook-layout .mx-inbox .ox-mailhead{padding:10px 20px 6px;gap:8px 12px}
+.outlook-layout .mx-inbox .ox-mailhead .mx-title{margin-right:4px}
+.outlook-layout .mx-inbox .ox-mailhead .mx-title h2{font-size:19px}
+.outlook-layout .mx-inbox .ox-mailhead .mx-search{flex:1 1 240px;max-width:none;height:38px}
+.outlook-layout .mx-inbox .ox-mailhead .mx-toggle{margin-left:0}
+.outlook-layout .mx-inbox .ox-mailhead .ox-compose{min-height:38px;height:38px}
+.outlook-layout .mx-inbox .ox-filters{padding:0 20px;gap:0}
+.outlook-layout .mx-inbox .mx-chip{height:36px}
+/* Reader: a tighter heading card, so the message itself starts higher. */
+.outlook-layout .mx-reader-inner{padding:16px 24px 40px;gap:12px}
+.outlook-layout .mx-reader-head{padding:18px 20px;gap:12px}
+.outlook-layout .mx-reader-head h2{font-size:20px}
+@media(max-width:640px){.outlook-layout .mx-inbox .ox-mailhead{padding:8px 12px 4px}.outlook-layout .mx-inbox .ox-filters{padding:0 12px}.outlook-layout .mx-reader-inner{padding:10px 10px 28px}}
+
+/* ---- Floating window (not full screen): the content gets the room, the headings get less ---- */
+.floating-compact .workspace-section-heading,.outlook-layout.floating-compact .page-narrow>.workspace-section-heading,.outlook-layout.floating-compact .page-medium>.workspace-section-heading{padding:12px 14px 2px}
+.floating-compact .workspace-section-heading h2{font-size:17px}
+.floating-compact .workspace-section-heading svg{width:18px;height:18px}
+.outlook-layout.floating-compact .pa-intro,.outlook-layout.floating-compact .page-narrow>.pa-intro,.outlook-layout.floating-compact .page-medium>.pa-intro{padding:0 14px 8px;font-size:12.5px}
+/* Acciones: the whole message is shown (no inner scroll) and the approve buttons stay at hand while reading it. */
+.outlook-layout.floating-compact .pa-list{padding:0 10px 14px;gap:10px}
+.outlook-layout.floating-compact .pa-card{padding:12px 14px 0;gap:10px}
+.outlook-layout.floating-compact .pa-fields>div{font-size:14px;grid-template-columns:62px minmax(0,1fr)}
+.outlook-layout.floating-compact .pa-message{max-height:none;overflow:visible;padding:10px 12px;font-size:14px;line-height:1.55}
+.outlook-layout.floating-compact .pa-note{font-size:12px}
+.outlook-layout.floating-compact .pa-actions{position:sticky;bottom:0;z-index:1;margin:0 -14px;padding:10px 14px;background:var(--bg-surface);border-radius:0 0 12px 12px}
+/* Historial: search, date and export share one row; the type filter goes right below, smaller. */
+.outlook-layout.floating-compact .page-medium .hx-tools{gap:8px;padding-bottom:10px}
+.outlook-layout.floating-compact .hx-search{order:1;flex:1 1 180px;height:36px}
+.outlook-layout.floating-compact .hx-date{order:2;height:36px;flex:0 0 auto}
+.outlook-layout.floating-compact .hx-date select{height:32px}
+.outlook-layout.floating-compact .hx-tools>.pa-btn{order:3;height:36px;min-height:36px}
+.outlook-layout.floating-compact .hx-filters{order:4;flex:1 1 100%;width:100%}
+.outlook-layout.floating-compact .hx-filter{flex:1;height:28px;padding:0 6px;font-size:12.5px}
+.outlook-layout.floating-compact .hx-range{order:5}
+.outlook-layout.floating-compact .hx-event{padding:12px 14px;gap:12px}
+
+/* Folder picker: always at the right next to «Nuevo correo», also in Borradores where there is no search box.
+   The focus ring belongs to the whole box, not to the select inside it. */
+.outlook-layout .mx-inbox .ox-mailhead .ox-location{margin-left:auto}
+.outlook-layout .ox-location select{outline:none;box-shadow:none}
+.outlook-layout .ox-location:focus-within{border-color:var(--border-focus);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent-primary) 18%,transparent)}
+
+/* Reminder under the latest AI answer: small and quiet, it should not compete with the answer. */
+.outlook-layout .chat-ai-note{margin:6px 0 0;font-size:11px;line-height:1.4;color:var(--text-secondary);opacity:.7}

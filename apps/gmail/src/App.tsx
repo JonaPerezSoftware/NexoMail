@@ -122,6 +122,9 @@ export function App() {
     try { if (mailFolder === 'inbox') await refreshEmails(); else await loadFolder(mailFolder); } finally { setLoadingMore(false); }
   };
   const changeMailCount = (value: number) => { saveMailCount(value); setMailCount(value); setLimit(value); if (mailFolder === 'inbox') void refreshEmails(); else void loadFolder(mailFolder); };
+  /** A mail linked from a chat answer: open it in Correo (expanding the floating panel first). */
+  const [openRequest, setOpenRequest] = useState<{ id: string; nonce: number } | null>(null);
+  const [mailFocus, setMailFocus] = useState<{ id: string; nonce: number } | null>(null);
   const syncMail = async () => { setSyncing(true); try { if (mailFolder === 'inbox') await refreshEmails(); else await loadFolder(mailFolder); } finally { setSyncing(false); } };
 
   /** Writing by hand follows the same path as the agent: a proposal that waits in Acciones. */
@@ -223,6 +226,18 @@ export function App() {
     return()=>{window.removeEventListener('message',onMessage);window.removeEventListener('keydown',onKey);};
   },[isFloating,floatingBridge]);
   useEffect(()=>{if(isFloating && !isExpanded && mobileView==='workspace' && activeTab==='inbox')setMobileView('chat');},[isFloating,isExpanded,mobileView,activeTab]);
+  useEffect(()=>{
+    if(!openRequest || (isFloating && !isExpanded))return;
+    setActiveTab('inbox');setMobileView('workspace');setMailFocus(openRequest);setOpenRequest(null);
+  },[openRequest,isFloating,isExpanded]);
+  function openMailFromChat(id:string){
+    if(!emails.some(email=>email.id===id)){window.alert('Ese correo ya no está entre los cargados: puede que lo hayas movido o que ya no esté entre los más recientes. Búscalo en la pestaña Correo.');return;}
+    if(mailFolder!=='inbox')setMailFolder('inbox');
+    setSelectedCategory('Todos');
+    setOpenRequest({id,nonce:Date.now()});
+    // The Correo tab only exists in full screen, so the floating panel is asked to expand.
+    if(isFloating && !isExpanded && floatingBridge)window.parent.postMessage({type:'EMAILAGENT_EXPAND',bridge:floatingBridge},location.origin);
+  }
   useEffect(()=>{if(isFloating && floatingBridge)window.parent.postMessage({type:'EMAILAGENT_VIEW',bridge:floatingBridge,section:isAuthModalOpen || (mobileView==='workspace' && activeTab==='settings')?'settings':mobileView==='chat'?'chat':activeTab==='pending'?'actions':activeTab==='audit'?'history':'mail'},location.origin);},[isFloating,floatingBridge,mobileView,activeTab,isAuthModalOpen]);
 
   useEffect(() => {
@@ -268,12 +283,15 @@ export function App() {
     refreshEmails();
   }, []);
 
+  // Every minute while visible. Pending proposals do not stop it: they keep their own copy of the mails they
+  // act on, and restored ones could otherwise freeze the list for days. It only waits while the agent is
+  // answering, an approval is running, or the account dialog is open.
   useEffect(()=>{
     const timer=window.setInterval(()=>{
-      if(document.visibilityState==='visible' && mailProvider.isConnected() && !isProcessing && !pendingActions.length && !isAuthModalOpen)void refreshEmails();
+      if(document.visibilityState==='visible' && mailProvider.isConnected() && !isProcessing && !executingActions.current.size && !isAuthModalOpen)void refreshEmails();
     },60000);
     return()=>window.clearInterval(timer);
-  },[isProcessing,pendingActions.length,isAuthModalOpen]);
+  },[isProcessing,isAuthModalOpen]);
 
   useEffect(()=>{
     database.current?.close();database.current=null;setStorageReady(false);setProposalsReady(false);setStorageLoading(false);
@@ -442,6 +460,13 @@ La propuesta sigue en Acciones para que la apruebes de nuevo.`);
         setAuditLogs(prev=>[{id:crypto.randomUUID(),timestamp:new Date().toISOString(),actionType:action.actionType,prompt:action.title,executionStatus:'FAILED',details:`${MAIL} limitó temporalmente las peticiones. No se hizo ningún cambio; la propuesta sigue pendiente.`},...prev]);
         return;
       }
+      // The permission failed before the request reached the mail service, so nothing was sent or changed.
+      if (err?.authorization === true) {
+        attemptedActions.current.delete(action.id);
+        alert(`${ACCOUNT} no renovó el permiso de NexoMail: ${err.message}\n\nNo se envió ni se cambió nada. La propuesta sigue en Acciones para que la apruebes de nuevo.`);
+        setAuditLogs(prev=>[{id:crypto.randomUUID(),timestamp:new Date().toISOString(),actionType:action.actionType,prompt:action.title,executionStatus:'FAILED',details:`${ACCOUNT} no renovó el permiso. No se hizo ningún cambio; la propuesta sigue pendiente.`},...prev]);
+        return;
+      }
       alert(`No se pudo confirmar la acción: ${err.message}. Revisa ${MAIL} antes de preparar otra propuesta. No se reintentará automáticamente.`);
       setPendingActions(prev=>prev.filter(item=>item.id!==action.id));
       setAuditLogs(prev=>[{id:crypto.randomUUID(),timestamp:new Date().toISOString(),actionType:action.actionType,prompt:action.title,executionStatus:'FAILED',details:'No se pudo confirmar el resultado. Sin reintento automático.'},...prev]);
@@ -504,17 +529,18 @@ La propuesta sigue en Acciones para que la apruebes de nuevo.`);
     else{setActiveTab(view);setMobileView('workspace');}
   }
   return (
-    <div className={`app-layout outlook-layout ${isFloating?'floating-mode':''}`}>
+    <div className={`app-layout outlook-layout ${isFloating?'floating-mode':''} ${isFloating && !isExpanded?'floating-compact':''}`}>
       <Header
         pendingCount={pendingActions.length} totalEmails={emails.length} unreadCount={unreadCount}
-        onRefresh={refreshEmails} isGmailConnected={isGmailConnected}
-        onOpenGmailAuth={()=>{if(isGmailConnected)setIsAuthModalOpen(true);else void authorizeGmail();}} onOpenSettings={()=>navigate('settings')} authorizing={isAuthorizing}/>
+        onRefresh={()=>void syncMail()} refreshing={syncing || folderLoading} updatedAt={lastSync} isGmailConnected={isGmailConnected}
+        onOpenGmailAuth={()=>{if(isGmailConnected)setIsAuthModalOpen(true);else void authorizeGmail();}} onOpenSettings={()=>navigate('settings')} onOpenPending={()=>navigate('pending')} authorizing={isAuthorizing}
+        center={securityAlerts.length>0 && <details className="insights-summary risk-pop">
+          <summary title="Ver los correos con señales de riesgo"><AlertTriangle aria-hidden="true"/><span className="lbl-long">{securityAlerts.length===1?'1 correo con señales de riesgo':securityAlerts.length+' correos con señales de riesgo'}</span><span className="lbl-short">{securityAlerts.length} con riesgo</span></summary>
+          <div className="risk-pop-panel" role="region" aria-label="Correos con señales de riesgo"><ul>{securityAlerts.map(email=><li key={email.id}><button type="button" className="md-mail-link" onClick={event=>{event.currentTarget.closest('details')?.removeAttribute('open');openMailFromChat(email.id);}}>{email.subject || '(Sin asunto)'}</button> — {email.insights?.label}<ul>{email.insights?.reasons.map(reason=><li key={reason}>{reason}</li>)}</ul></li>)}</ul><p>Comprueba estas solicitudes por otro canal antes de responder o abrir enlaces.</p></div>
+        </details>}/>
       {isAuthorizing && <div className="storage-status" role="status">Esperando autorización en {ACCOUNT}…</div>}
       {gmailError && <div className="api-alert-banner" role="alert"><AlertTriangle size={17}/><span>{gmailError}</span><button disabled={isAuthorizing} onClick={()=>void authorizeGmail()} className="workspace-button">Reautorizar con {ACCOUNT}</button></div>}
       {isStorageProblem(storageStatus) && <div className="storage-status" role="alert"><span>{storageStatus}</span></div>}
-      {securityAlerts.length>0 && <div className="insights-summary" role="status" aria-live="polite">
-        {securityAlerts.length>0 && <details><summary>{securityAlerts.length===1?'1 correo con señales de riesgo':securityAlerts.length+' correos con señales de riesgo'} · Revisar</summary><ul>{securityAlerts.map(email=><li key={email.id}><strong>{email.subject}</strong> — {email.insights?.label}<ul>{email.insights?.reasons.map(reason=><li key={reason}>{reason}</li>)}</ul></li>)}</ul><p>Comprueba estas solicitudes por otro canal antes de responder o abrir enlaces.</p></details>}
-      </div>}
       <div className="workspace-shell">
         <aside className="workspace-sidebar" aria-label={`Navegación de ${MAIL}`}>
           <p className="sidebar-caption">GESTIÓN DE CORREO</p>
@@ -523,10 +549,10 @@ La propuesta sigue en Acciones para que la apruebes de nuevo.`);
         </aside>
         <main className="workspace-content">
           <section className="workspace-chat" hidden={currentView!=='chat'}>
-            <AgentChat active={currentView==='chat'} externalPrompt={agentPrompt} onSendPrompt={handleSendPrompt} isProcessing={isProcessing || storageLoading} restoredMessages={restoredChat} onHistoryChange={saveChat}
+            <AgentChat active={currentView==='chat'} externalPrompt={agentPrompt} onSendPrompt={handleSendPrompt} isProcessing={isProcessing || storageLoading} restoredMessages={restoredChat} onHistoryChange={saveChat} onOpenMail={openMailFromChat}
               onClearHistory={()=>agentEngine.clearHistory()}/>
           </section>
-          <section className="workspace-page" hidden={currentView!=='inbox'}><EmailInbox updatedAt={lastSync?lastSync.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):undefined} automatic={autoGrouping} onAutomaticChange={setAutoGrouping} emails={emails} onMarkRead={handleMarkRead} onTrash={handleTrash} selectedCategory={selectedCategory} onSelectCategory={setSelectedCategory} folder={mailFolder} onSelectFolder={selectFolder} folderEmails={folderEmails} folderLoading={folderLoading} onRefresh={()=>void syncMail()} refreshing={syncing || folderLoading} drafts={savedDrafts} onOpenDraft={draft=>setCompose({to:draft.to,subject:draft.subject,body:draft.body,files:[],draftId:draft.id})} onDiscardDraft={id=>setSavedDrafts(list=>list.filter(d=>d.id!==id))} onCompose={prefill=>setCompose({to:prefill?.to ?? '',subject:prefill?.subject ?? '',body:'',files:[]})} onReplyWithAI={replyWithAI} onRestore={handleRestore} onSetCategory={handleSetCategory} onListAttachments={listAttachments} onDownloadAttachment={downloadAttachment} loadLimit={loadLimit} maxLoaded={MAX_LOADED} onLoadMore={()=>void loadMore()} loadingMore={loadingMore} connected={isGmailConnected}/></section>
+          <section className="workspace-page" hidden={currentView!=='inbox'}><EmailInbox updatedAt={lastSync?lastSync.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):undefined} automatic={autoGrouping} onAutomaticChange={setAutoGrouping} emails={emails} onMarkRead={handleMarkRead} onTrash={handleTrash} selectedCategory={selectedCategory} onSelectCategory={setSelectedCategory} folder={mailFolder} onSelectFolder={selectFolder} folderEmails={folderEmails} folderLoading={folderLoading} onRefresh={()=>void syncMail()} refreshing={syncing || folderLoading} drafts={savedDrafts} onOpenDraft={draft=>setCompose({to:draft.to,subject:draft.subject,body:draft.body,files:[],draftId:draft.id})} onDiscardDraft={id=>setSavedDrafts(list=>list.filter(d=>d.id!==id))} onCompose={prefill=>setCompose({to:prefill?.to ?? '',subject:prefill?.subject ?? '',body:'',files:[]})} onReplyWithAI={replyWithAI} onRestore={handleRestore} onSetCategory={handleSetCategory} onListAttachments={listAttachments} onDownloadAttachment={downloadAttachment} loadLimit={loadLimit} maxLoaded={MAX_LOADED} onLoadMore={()=>void loadMore()} loadingMore={loadingMore} connected={isGmailConnected} focus={mailFocus}/></section>
           <section className="workspace-page workspace-scroll page-narrow" hidden={currentView!=='pending'}><div className="workspace-section-heading"><ShieldAlert size={21}/><h2>Acciones pendientes</h2><span className="workspace-count">{pendingActions.length}</span></div><p className="pa-intro">Revisa el destinatario y el contenido. Nada se ejecuta hasta que lo apruebes.</p><PendingActionsList pendingActions={pendingActions} onApprove={handleApproveAction} onReject={handleRejectAction} onGoToChat={()=>navigate('chat')} onChange={()=>setPendingActions(list=>[...list])}/></section>
           <section className="workspace-page workspace-scroll page-medium" hidden={currentView!=='audit'}><AuditLogView logs={auditLogs}/></section>
           {(currentView==='summary' || currentView==='settings') && <WorkspacePages storageStatus={storageStatus} storageReady={storageReady} onEraseStorage={eraseStoredData} view={currentView} emails={emails} pendingCount={pendingActions.length} logCount={auditLogs.length} theme={theme} strictMode={strictMode} onToggleTheme={handleToggleTheme} onToggleStrictMode={handleToggleStrictMode} onAuthorize={async()=>{if(isGmailConnected)setIsAuthModalOpen(true);else await authorizeGmail();}} authorizing={isAuthorizing} connected={isGmailConnected} mailCount={mailCount} onMailCount={changeMailCount}/>}

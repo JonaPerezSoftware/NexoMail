@@ -33,3 +33,13 @@ export function dayLabel(date: Date): string {
 export function messageStamp(date: Date): string {
   return `${date.toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' }).replace('.', '')} · ${timeLabel(date)}`;
 }
+
+/** When a mail arrived, short but never ambiguous: "hoy 09:50", "ayer 23:54", "5 nov 09:50" or "5 nov 2025". */
+export function mailWhen(timestamp: number): string {
+  const date = new Date(timestamp);
+  if (!timestamp || isNaN(date.getTime())) return '';
+  const day = dayLabel(date);
+  if (day === 'Hoy' || day === 'Ayer') return `${day.toLowerCase()} ${timeLabel(date)}`;
+  const short = date.toLocaleDateString('es-ES', { day: 'numeric', month: 'short' }).replace('.', '');
+  return date.getFullYear() === new Date().getFullYear() ? `${short} ${timeLabel(date)}` : `${short} ${date.getFullYear()}`;
+}

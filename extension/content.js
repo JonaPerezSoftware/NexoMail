@@ -1,12 +1,20 @@
 (() => {
-  if(document.getElementById('emailagent-floating-root'))return;
+  // After the extension reloads, the copy left in an open tab is disconnected. A new copy asks it to step aside:
+  // a live copy stays (and this one stops), a disconnected one removes itself. Roots without the marker come
+  // from a version older than this one, so they can only be disconnected leftovers.
+  const previous=document.getElementById('emailagent-floating-root');
+  if(previous){
+    if(!previous.hasAttribute('data-nexomail-live'))previous.remove();
+    else{previous.dispatchEvent(new CustomEvent('nexomail-replace'));if(document.getElementById('emailagent-floating-root'))return;}
+  }
   const provider=location.hostname==='mail.google.com'?'gmail':'outlook';
   // v2 drops saved sizes from the old, smaller default so the chat opens at the new size.
   const storageKey='emailagent.floating.geometry.v2.'+provider;
   chrome.storage.local.remove('emailagent.floating.geometry.'+provider)?.catch?.(()=>{});
   const bridge=crypto.randomUUID(),extensionOrigin=`chrome-extension://${chrome.runtime.id}`;
   const extensionVersion=chrome.runtime.getManifest().version;
-  const host=document.createElement('div');host.id='emailagent-floating-root';
+  const host=document.createElement('div');host.id='emailagent-floating-root';host.setAttribute('data-nexomail-live','');
+  host.addEventListener('nexomail-replace',()=>{if(!chrome.runtime?.id)host.remove();});
   for(const [name,value] of Object.entries({position:'fixed',top:'0',left:'0',width:'0',height:'0',overflow:'visible','z-index':'2147483646','pointer-events':'none'}))host.style.setProperty(name,value,'important');
   const shadow=host.attachShadow({mode:'closed'});
   const style=document.createElement('style');
@@ -92,6 +100,7 @@
   window.addEventListener('message',event=>{
     if(event.source!==frame.contentWindow || event.origin!==extensionOrigin || event.data?.bridge!==bridge)return;
     if(event.data.type==='EMAILAGENT_MINIMIZE')minimize();
+    if(event.data.type==='EMAILAGENT_EXPAND' && !expanded && !box.hidden)toggleExpanded();
     if(event.data.type==='EMAILAGENT_DISPLAY_READY'){clearTimeout(shellTimer);shellStatus.hidden=true;sendDisplayMode();}
   });
   chrome.runtime.onMessage.addListener((message,sender,reply)=>{if(sender.id===chrome.runtime.id && message?.type==='EMAILAGENT_TOGGLE_FLOATING'){if(box.hidden)open();else minimize();reply({ok:true});}});

@@ -1,10 +1,10 @@
-import { PublicClientApplication, BrowserCacheLocation, LogLevel, EventType, InteractionRequiredAuthError, type AccountInfo, type AuthenticationResult } from '@azure/msal-browser';
+import { PublicClientApplication, BrowserCacheLocation, CacheLookupPolicy, LogLevel, EventType, type AccountInfo, type AuthenticationResult } from '@azure/msal-browser';
 import { analyzeMail, inspectHtml } from '@shared/mail/mail-insights';
 import type { Email, EmailCategory, MailAttachment, MailFile } from '../types/email';
 import { base64ToBlob } from './mailFiles';
 import { MANUAL_CATEGORIES } from '../types/email';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_LABEL, MAX_LOADED } from './platform';
-import { describeMicrosoftError } from './microsoftError';
+import { describeMicrosoftError, AuthorizationError } from './microsoftError';
 import { cleanMessageBody } from './mailIntent';
 import { captureSession, hydrateSession } from './microsoftSessionCache';
 
@@ -59,6 +59,8 @@ export class OutlookProvider {
   private client: PublicClientApplication | null = null;
   private account: AccountInfo | null = null;
   private flowPending = false;
+  /** Renewals run one after another, so parallel requests never open two Microsoft windows. */
+  private renewals: Promise<unknown> = Promise.resolve();
   private folderIds: { key: string; ids: Record<string, string> } | null = null;
 
   private clientId(): string { return window.emailAgentHost.config.microsoftClientId?.trim() || ''; }
@@ -182,15 +184,28 @@ export class OutlookProvider {
     const scopes = mode === 'send' ? SEND_SCOPES : mode === 'write' ? WRITE_SCOPES : READ_SCOPES;
     const client = await this.pca();
     let result: AuthenticationResult;
-    try { result = await client.acquireTokenSilent({ scopes, account }); }
-    catch (error) {
-      if (!(error instanceof InteractionRequiredAuthError)) throw error;
-      if (!interactive) throw new Error('Microsoft requiere autorización.');
-      try { result = await this.flow({ scopes, account, loginHint: account.username }, false); }
-      catch (flowError) { throw new Error(describeMicrosoftError(flowError as { message?: string })); }
+    // Saved token or refresh token only. MSAL's other fallback, a hidden iframe, cannot reach Microsoft from an
+    // extension page and just times out (monitor_window_timeout), so renewals go through the extension's own window.
+    try { result = await client.acquireTokenSilent({ scopes, account, cacheLookupPolicy: CacheLookupPolicy.AccessTokenAndRefreshToken }); }
+    catch {
+      try { result = await this.renew(scopes, account, interactive); }
+      catch (flowError) { throw new AuthorizationError(describeMicrosoftError(flowError as { message?: string })); }
     }
     if (result.account?.homeAccountId !== account.homeAccountId || this.account?.homeAccountId !== account.homeAccountId) throw new Error('La cuenta cambió durante la operación.');
     return result.accessToken;
+  }
+
+  /** First without showing anything (Microsoft's own session), then, if allowed, asking the person. */
+  private renew(scopes: string[], account: AccountInfo, interactive: boolean): Promise<AuthenticationResult> {
+    const run = this.renewals.catch(() => {}).then(async () => {
+      // A renewal that finished while this one waited may already have left a valid token.
+      try { return await (await this.pca()).acquireTokenSilent({ scopes, account, cacheLookupPolicy: CacheLookupPolicy.AccessTokenAndRefreshToken }); } catch { /* renew below */ }
+      try { return await this.flow({ scopes, account, loginHint: account.username, prompt: 'none' }, false, false); }
+      catch (silent) { if (!interactive) throw silent; }
+      return this.flow({ scopes, account, loginHint: account.username }, false, true);
+    });
+    this.renewals = run;
+    return run;
   }
 
   private async graph<T>(method: string, path: string, body?: unknown, mode: Mode = 'read', interactive = true): Promise<T> {

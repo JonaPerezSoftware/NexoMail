@@ -1,5 +1,5 @@
-import {useMemo,useState} from 'react';
-import {AlertTriangle,ExternalLink,ShieldAlert} from 'lucide-react';
+import {useEffect,useMemo,useRef,useState} from 'react';
+import {AlertTriangle,ExternalLink,Link2,ShieldAlert,X} from 'lucide-react';
 import {mailDocument} from '@shared/mail/mail-document';
 import {checkLink} from '@shared/mail/mail-insights';
 
@@ -15,6 +15,31 @@ export function MailDocument({html,text}:{html?:string;text:string}){
     return found.map(link=>({...link,check:checkLink(link.href,link.text)}));
   },[html,text,content.links]);
   const warned=links.filter(link=>link.check.findings.length>0).length;
+  const [linksOpen,setLinksOpen]=useState(warned>0);
+  /** Shown when the person clicks inside the message, where links cannot open. */
+  const [hint,setHint]=useState(false);
+  const frame=useRef<HTMLIFrameElement>(null),list=useRef<HTMLDetailsElement>(null);
+  useEffect(()=>{setLinksOpen(warned>0);setHint(false);},[html,text,warned]);
+
+  // The message is locked (no scripts), so a click inside it cannot be seen directly. When the page loses
+  // focus to the message frame, the person clicked in it: most likely on a link that did nothing.
+  useEffect(()=>{
+    if(!links.length)return;
+    let timer=0;
+    const onBlur=()=>window.setTimeout(()=>{
+      if(document.activeElement!==frame.current)return;
+      setHint(true);window.clearTimeout(timer);timer=window.setTimeout(()=>setHint(false),12000);
+      // Take the focus back so the next click in the message is noticed too.
+      frame.current?.blur();window.focus();
+    },0);
+    window.addEventListener('blur',onBlur);
+    return()=>{window.removeEventListener('blur',onBlur);window.clearTimeout(timer);};
+  },[links.length]);
+
+  function showLinks(){
+    setHint(false);setLinksOpen(true);
+    requestAnimationFrame(()=>{list.current?.scrollIntoView({behavior:'smooth',block:'start'});list.current?.querySelector('summary')?.focus({preventScroll:true});});
+  }
 
   function open(link:typeof links[number]){
     const {check}=link;
@@ -26,12 +51,30 @@ export function MailDocument({html,text}:{html?:string;text:string}){
     if(window.confirm(message))window.open(destination,'_blank','noopener,noreferrer');
   }
 
+  const linkCount=links.length===1?'1 enlace':`${links.length} enlaces`;
   return <section className="nexo-mail-document">
     <div className="nexo-reader-controls"><strong>Contenido del mensaje</strong><div>{html && <><button type="button" onClick={()=>setPlain(!plain)}>{plain?'Ver diseño':'Ver texto'}</button><button type="button" onClick={()=>setImages(!images)}>{images?'Ocultar imágenes':'Mostrar imágenes'}</button></>}</div></div>
-    {html && !plain?<><p className="nexo-reader-note">{images?'Imágenes externas habilitadas para este mensaje.':'Las imágenes externas están bloqueadas para proteger tu privacidad.'} Los enlaces no se abren desde el mensaje: usa la lista de enlaces de abajo.</p><iframe title="Diseño del correo" sandbox="" referrerPolicy="no-referrer" srcDoc={content.document} className="nexo-mail-frame"/></>:<div className="nexo-mail-text">{text}</div>}
-    {links.length>0 && <details className="nexo-message-links" open={warned>0}>
+    {links.length>0 && <aside className="lk-banner">
+      <Link2 aria-hidden="true"/>
+      <div><strong>Los enlaces no se abren pulsándolos en el correo</strong>
+        <p>Este correo tiene {linkCount}. Por seguridad, NexoMail lo muestra en una vista bloqueada, para que un enlace engañoso no se abra con un clic sin querer. Para abrir uno, usa «Enlaces del mensaje»: verás adónde lleva de verdad y NexoMail lo revisará antes de abrirlo.</p></div>
+      <button type="button" className="pa-btn pa-btn-secondary" onClick={showLinks}>Ver enlaces{warned>0?` · ${warned} con avisos`:''}</button>
+    </aside>}
+    {html && !plain?<>
+      <p className="nexo-reader-note">{images?'Imágenes externas habilitadas para este mensaje.':'Las imágenes externas están bloqueadas para proteger tu privacidad.'}</p>
+      <div className="lk-frame">
+        <iframe ref={frame} title="Diseño del correo" sandbox="" referrerPolicy="no-referrer" srcDoc={content.document} className="nexo-mail-frame"/>
+        {hint && <div className="lk-hint" role="status">
+          <Link2 aria-hidden="true"/>
+          <span>Los enlaces no se abren desde aquí. Ábrelos en «Enlaces del mensaje», al final del correo.</span>
+          <button type="button" className="pa-btn pa-btn-primary" onClick={showLinks}>Ver enlaces</button>
+          <button type="button" className="lk-hint-close" aria-label="Cerrar aviso" onClick={()=>setHint(false)}><X aria-hidden="true"/></button>
+        </div>}
+      </div>
+    </>:<div className="nexo-mail-text">{text}</div>}
+    {links.length>0 && <details ref={list} className="nexo-message-links" open={linksOpen} onToggle={event=>setLinksOpen(event.currentTarget.open)}>
       <summary>Enlaces del mensaje ({links.length}){warned>0 && <span className="lk-count">{warned===1?'1 con avisos':`${warned} con avisos`}</span>}</summary>
-      <p>NexoMail revisa la dirección de cada enlace en tu equipo, sin visitarlo. No consulta listas de sitios maliciosos: si no esperabas el correo, no abras sus enlaces.</p>
+      <p>Pulsa un enlace para abrirlo. NexoMail revisa la dirección en tu equipo, sin visitarla; no consulta listas de sitios maliciosos. Si no esperabas el correo, no abras sus enlaces.</p>
       <ul className="lk-list">
         {links.map(link=>{
           const {check}=link;

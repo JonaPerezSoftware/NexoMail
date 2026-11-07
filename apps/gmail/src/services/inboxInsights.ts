@@ -1,6 +1,7 @@
 import { analyzeMail } from '@shared/mail/mail-insights';
 import type { Email } from '../types/email';
 import { normalizeText } from './mailIntent';
+import { mailWhen } from './dates';
 
 /**
  * Answers computed from the loaded mail, with or without AI: the same question always gives the
@@ -9,7 +10,8 @@ import { normalizeText } from './mailIntent';
 export type InsightRequest = 'briefing' | 'awaiting' | 'risks';
 
 const AUTOMATED_SENDER = /(?:^|[._+-])(?:no-?reply|do-?not-?reply|notifica\w*|notifications?|alerts?|mailer-daemon|postmaster|bounce\w*|news(?:letter)?|marketing|updates?|soporte-automatico)(?:[._+-]|@)/i;
-const AUTOMATED_LABELS = ['CATEGORY_PROMOTIONS', 'CATEGORY_SOCIAL', 'CATEGORY_UPDATES', 'CATEGORY_FORUMS', 'SPAM'];
+const AUTOMATED_SUBJECT = /^\s*(?:notificacion|notification|alerta|comprobante|estado de cuenta|confirmacion de (?:pago|transaccion|transferencia|compra|pedido)|codigo de (?:verificacion|seguridad|acceso))\b/;
+const AUTOMATED_LABELS =['CATEGORY_PROMOTIONS', 'CATEGORY_SOCIAL', 'CATEGORY_UPDATES', 'CATEGORY_FORUMS', 'SPAM'];
 /** Questions and requests addressed to the reader. */
 const ASKS_FOR_REPLY = /\?|\b(?:puedes|podrias|podria|pueden|confirma\w*|por favor|favor de|necesito|necesitamos|quedo atent\w*|espero (?:tu|su) respuesta|me avisas|avisame|me dices|me comentas|responde\w*|tu respuesta|su respuesta|revis\w*|aprueb\w*|cuando puedes|te parece|nos reunimos|disponible|disponibilidad)\b/;
 
@@ -20,6 +22,8 @@ export function isAutomated(email: Email): boolean {
   if (AUTOMATED_SENDER.test(email.sender)) return true;
   if (email.labels.some((label) => AUTOMATED_LABELS.includes(label))) return true;
   if (['Suscripciones', 'Notificaciones', 'Boletines'].includes(email.category)) return true;
+  // Outlook has no "updates" category, so bank and service notices are also recognised by their subject.
+  if (AUTOMATED_SUBJECT.test(normalizeText(email.subject))) return true;
   return insightsOf(email).categories.includes('Boletines');
 }
 
@@ -59,10 +63,18 @@ export function detectInsightRequest(prompt: string): InsightRequest | null {
 }
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
-/** A list item with the subject in bold and the sender and date on a second, lighter line. */
-const item = (email: Email, extra?: string) =>
-  `- **${email.subject || '(Sin asunto)'}**\n  ${email.senderName}${email.date ? ` · ${email.date}` : ''}${extra ? `\n  ${extra}` : ''}`;
-const quoted = (list: Email[]) => list.slice(0, 3).map((email) => `«${email.subject}»`).join(' · ');
+/**
+ * A subject that opens its mail when clicked: "[Asunto](#correo/id)". The chat renders it as a
+ * button; the brackets and markdown marks of the subject itself are neutralised so they cannot break it.
+ */
+export const mailLink = (email: Email) =>
+  `[${(email.subject || '(Sin asunto)').replace(/\[/g, '(').replace(/\]/g, ')').replace(/[*`]/g, '')}](#correo/${encodeURIComponent(email.id).replace(/[()]/g, (c) => (c === '(' ? '%28' : '%29'))})`;
+/** A list item with the subject in bold and the sender, date and time on a second, lighter line. */
+const item = (email: Email, extra?: string) => {
+  const when = mailWhen(email.timestamp) || email.date;
+  return `- **${mailLink(email)}**\n  ${email.senderName}${when ? ` · ${when}` : ''}${extra ? `\n  ${extra}` : ''}`;
+};
+const quoted = (list: Email[]) => list.slice(0, 3).map((email) => `«${mailLink(email)}»`).join(' · ');
 
 export function describeInsight(kind: InsightRequest, emails: Email[], isReal: boolean): string {
   const scope = isReal ? `Analicé los ${emails.length} correos más recientes de tu bandeja.` : `Analicé los ${emails.length} correos de demostración.`;
@@ -91,9 +103,9 @@ export function describeInsight(kind: InsightRequest, emails: Email[], isReal: b
     '**Resumen de tu bandeja**',
     scope,
     '',
-    `- **${plural(unread.length, 'sin leer', 'sin leer')}**${unread.length ? `\n  El más reciente: «${newestFirst(unread)[0].subject}»` : ''}`,
+    `- **${plural(unread.length, 'sin leer', 'sin leer')}**${unread.length ? `\n  El más reciente: «${mailLink(newestFirst(unread)[0])}»` : ''}`,
     `- **${plural(urgent.length, 'urgente o importante', 'urgentes o importantes')}**${urgent.length ? `\n  ${quoted(urgent)}` : ''}`,
-    `- **${plural(waiting.length, 'espera tu respuesta', 'esperan tu respuesta')}**${waiting.length ? `\n  ${waiting.slice(0, 3).map((email) => `«${email.subject}» de ${email.senderName}`).join(' · ')}` : ''}`,
+    `- **${plural(waiting.length, 'espera tu respuesta', 'esperan tu respuesta')}**${waiting.length ? `\n  ${waiting.slice(0, 3).map((email) => `«${mailLink(email)}» de ${email.senderName}`).join(' · ')}` : ''}`,
     `- **${plural(risky.length, 'con señales de riesgo', 'con señales de riesgo')}**${risky.length ? '\n  Revísalos antes de abrir enlaces o adjuntos' : ''}`,
     `- **${plural(automated.length, 'notificación o boletín', 'notificaciones o boletines')}**${automated.length ? '\n  Puedes limpiarlos con «Limpiar promociones»' : ''}`,
   ];

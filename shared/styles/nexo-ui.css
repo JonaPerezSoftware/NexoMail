@@ -471,3 +471,36 @@ div.att-box{flex-direction:row;align-items:center;gap:8px}
 :root[data-theme='dark'] .lk-warn .lk-icon{color:#f3c26b}
 
 .mx-reader .nexo-message-links .lk-item button,.nexo-message-links .lk-item button{height:auto;min-height:0;padding:9px 10px;align-items:flex-start;justify-content:flex-start;white-space:normal}
+
+/* Mail subjects in chat answers open that mail in Correo. */
+.message-text.md .md-mail-link{display:inline;padding:0;margin:0;border:0;background:none;font:inherit;font-weight:inherit;color:var(--accent-primary-text);text-align:left;text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:3px;text-decoration-color:color-mix(in srgb,currentColor 40%,transparent);cursor:pointer;border-radius:3px}
+.message-text.md .md-mail-link:hover{text-decoration-color:currentColor}
+.message-text.md .md-mail-link:focus-visible{outline:2px solid var(--accent-primary);outline-offset:2px}
+
+/* Header sync button: spins while it works and then says when the list was refreshed. */
+.workspace-sync-note{font-size:12px;color:var(--text-secondary);white-space:nowrap}
+.workspace-icon:disabled{cursor:default;opacity:.75}
+
+/* Links cannot be clicked inside the locked message: say so where the person looks, and offer the way that works. */
+.lk-banner{display:flex;align-items:flex-start;gap:12px;padding:12px 14px;border:1px solid color-mix(in srgb,var(--accent-primary) 35%,var(--border-subtle));border-radius:10px;background:color-mix(in srgb,var(--accent-primary) 7%,var(--bg-surface));color:var(--text-primary);font-size:13.5px;line-height:1.5}
+.lk-banner>svg{flex:0 0 auto;width:18px;height:18px;margin-top:2px;color:var(--accent-primary-text)}
+.lk-banner>div{flex:1;min-width:0}
+.lk-banner p{margin:2px 0 0;color:var(--text-secondary)}
+.lk-banner>.pa-btn{flex:0 0 auto;align-self:center;white-space:nowrap}
+@media(max-width:620px){.lk-banner{flex-wrap:wrap}.lk-banner>.pa-btn{margin-left:30px}}
+.lk-frame{position:relative}
+.lk-hint{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);width:min(560px,calc(100% - 24px));display:flex;align-items:center;gap:10px;padding:10px 10px 10px 14px;border-radius:10px;background:var(--bg-surface);color:var(--text-primary);border:1px solid var(--border-default);box-shadow:0 10px 30px rgba(0,0,0,.25);font-size:13.5px;line-height:1.4;animation:lk-hint-in .18s ease-out}
+.lk-hint>svg{flex:0 0 auto;width:18px;height:18px;color:var(--accent-primary-text)}
+.lk-hint>span{flex:1;min-width:0}
+.lk-hint>.pa-btn{flex:0 0 auto;white-space:nowrap}
+.lk-hint-close{flex:0 0 auto;display:grid;place-items:center;width:28px;height:28px;padding:0;border:0;border-radius:7px;background:none;color:var(--text-secondary);cursor:pointer}
+.lk-hint-close:hover{background:var(--bg-panel)}
+.lk-hint-close svg{width:16px;height:16px}
+@keyframes lk-hint-in{from{opacity:0;transform:translate(-50%,6px)}to{opacity:1;transform:translate(-50%,0)}}
+@media(prefers-reduced-motion:reduce){.lk-hint{animation:none}}
+
+/* Header count of proposals waiting for approval: a button that opens Acciones. */
+button.workspace-pending-count{display:inline-flex;align-items:center;gap:6px;border:1px solid color-mix(in srgb,var(--accent-amber-text) 30%,transparent);font:inherit;font-size:12px;font-weight:600;white-space:nowrap;cursor:pointer;line-height:1.2}
+button.workspace-pending-count:hover{border-color:var(--accent-amber-text)}
+button.workspace-pending-count:focus-visible{outline:2px solid var(--accent-primary);outline-offset:2px}
+button.workspace-pending-count svg{width:14px;height:14px;flex:0 0 auto}

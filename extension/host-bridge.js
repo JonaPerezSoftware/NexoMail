@@ -26,5 +26,6 @@
     return result.value;
   };
   host.openOptions=()=>chrome.runtime.openOptionsPage();
+  host.reloadExtension=async()=>{const result=await chrome.runtime.sendMessage({type:'NEXOMAIL_RELOAD_EXTENSION'});if(!result?.ok)throw new Error(result?.error || 'No se pudo recargar la extensión.');};
   window.emailAgentHost=host;
 })();

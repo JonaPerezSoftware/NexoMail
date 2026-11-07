@@ -24,6 +24,8 @@ interface AgentChatProps {
   restoredMessages?: Message[] | null;
   onHistoryChange?: (messages:Message[])=>void;
   onClearHistory?: () => void;
+  /** Opens a mail the answer links to, in the Correo tab. */
+  onOpenMail?: (id: string) => void;
   /** True while the chat is on screen; it jumps to the latest message every time it is shown. */
   active?: boolean;
   /** A prompt sent from elsewhere in the app, such as «Responder con IA» in the mail tab. */
@@ -146,7 +148,7 @@ function describeStep(step: AgentStep): { label: string; text: string; tone: str
   }
 }
 
-export const AgentChat: React.FC<AgentChatProps> = ({ onSendPrompt, isProcessing, active = true, externalPrompt, onClearHistory, restoredMessages, onHistoryChange }) => {
+export const AgentChat: React.FC<AgentChatProps> = ({ onSendPrompt, isProcessing, active = true, externalPrompt, onClearHistory, restoredMessages, onHistoryChange, onOpenMail }) => {
   const [input, setInput] = useState('');
   const [files, setFiles] = useState<MailFile[]>([]);
   const [fileError, setFileError] = useState('');
@@ -195,6 +197,9 @@ export const AgentChat: React.FC<AgentChatProps> = ({ onSendPrompt, isProcessing
 
   const modelInfo = formatModelDetails(llmHealth);
   const userTurnCount = messages.filter(m => m.sender === 'user').length;
+  // A quiet reminder under the latest answer only, and only when the AI wrote it (not the greeting or the rules engine).
+  const lastAgent = [...messages].reverse().find(m => m.sender === 'agent');
+  const aiNoteFor = modelInfo.isConfigured && lastAgent?.steps?.length && !lastAgent.steps.some(isFallbackStep) ? lastAgent.id : null;
   const scrollArea = useRef<HTMLDivElement>(null);
   /** Suggested requests stay available after the conversation starts, behind a button next to the input. */
   const [suggestOpen, setSuggestOpen] = useState(false);
@@ -352,11 +357,12 @@ No se preparó ninguna acción. Vuelve a intentarlo en unos segundos.`,
                   </div>
                 )}
 
-                <MessageText text={msg.text} />
+                <MessageText text={msg.text} onOpenMail={onOpenMail} />
 
                 {(() => { const date = parseStamp(msg.created_at); return date
                   ? <time className="message-time" dateTime={date.toISOString()} title={date.toLocaleString('es-ES', { dateStyle: 'full', timeStyle: 'short' })}>{messageStamp(date)}</time>
                   : <span className="message-time">{msg.timestamp}</span>; })()}
+                {msg.id === aiNoteFor && !isProcessing && <p className="chat-ai-note">NexoMail es una IA y puede cometer errores.</p>}
               </div>
             </div>
           );
