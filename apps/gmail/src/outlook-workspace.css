@@ -510,3 +510,36 @@ a.pa-btn{text-decoration:none}
 
 /* Reminder under the latest AI answer: small and quiet, it should not compete with the answer. */
 .outlook-layout .chat-ai-note{margin:6px 0 0;font-size:11px;line-height:1.4;color:var(--text-secondary);opacity:.7}
+
+/* Risk chip: red only for strong signs of fraud; amber when there are only details to check. */
+.outlook-layout .workspace-topbar .risk-pop-review>summary{border-color:color-mix(in srgb,var(--accent-amber-text) 35%,transparent);background:var(--accent-amber-subtle);color:var(--accent-amber-text)}
+.outlook-layout .workspace-topbar .risk-pop-review>summary:hover,.outlook-layout .workspace-topbar .risk-pop-review[open]>summary{border-color:var(--accent-amber-text)}
+.risk-pop-group+.risk-pop-group{margin-top:14px;padding-top:12px;border-top:1px solid var(--border-subtle)}
+.risk-pop-group h3{margin:0;font-size:13.5px;font-weight:650;display:flex;align-items:center;gap:6px}
+.risk-pop-group h3 span{padding:0 7px;border-radius:999px;background:var(--bg-panel);font-size:11.5px;font-weight:600;color:var(--text-secondary)}
+.risk-pop-group>p{margin:2px 0 8px!important;color:var(--text-secondary)}
+.risk-pop-group>ul{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:8px}
+
+/* Same as the folder picker: the whole box shows focus, never the select inside it (Clasificar, date filter in Historial). */
+.outlook-layout .mx-classify select,.outlook-layout .mx-classify select:focus-visible,.outlook-layout .hx-date select,.outlook-layout .hx-date select:focus-visible{outline:none;box-shadow:none}
+.outlook-layout .mx-classify:focus-within,.outlook-layout .hx-date:focus-within{border-color:var(--border-focus);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent-primary) 18%,transparent)}
+
+/* Message editor: «Insertar enlace» and the list of where each link really goes. */
+.be{display:flex;flex-direction:column;gap:8px}
+.be textarea{width:100%}
+.be-tools{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.be-tools small{color:var(--text-secondary);font-size:12px}
+.be-form{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:12px;border:1px solid var(--border-default);border-radius:10px;background:var(--bg-panel)}
+.be-form label{display:flex;flex-direction:column;gap:4px;font-size:12.5px;font-weight:600;color:var(--text-secondary)}
+.be-form input{height:36px;padding:0 10px;border:1px solid var(--border-default);border-radius:8px;background:var(--bg-surface);color:var(--text-primary);font:inherit;font-weight:400}
+.be-form .cm-error,.be-form-actions{grid-column:1/-1}
+.be-form-actions{display:flex;justify-content:flex-end;gap:8px}
+@media(max-width:620px){.be-form{grid-template-columns:1fr}}
+.be-links{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.be-links li{display:flex;align-items:flex-start;gap:8px;padding:8px 10px;border:1px solid var(--border-subtle);border-radius:8px;font-size:13px;color:var(--text-primary);overflow-wrap:anywhere}
+.be-links li svg{flex:0 0 auto;width:15px;height:15px;margin-top:2px;color:var(--text-secondary)}
+.be-links li span{display:flex;flex-direction:column;gap:2px;min-width:0}
+.be-links small{font-size:12px;color:var(--text-secondary)}
+.be-links .be-link-warn{border-color:color-mix(in srgb,var(--accent-amber-text) 40%,transparent);background:var(--accent-amber-subtle)}
+.be-links .be-link-warn svg,.be-links .be-link-warn small{color:var(--accent-amber-text)}
+.pa-message .pa-link{color:var(--accent-primary-text);text-decoration:underline;text-underline-offset:2px;cursor:help}

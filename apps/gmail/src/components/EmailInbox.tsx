@@ -8,13 +8,14 @@ import { MAIL } from '../services/platform';
 import { BusyButton } from './BusyButton';
 import { MailAttachments } from './MailAttachments';
 
-export type MailFolder = 'inbox' | 'sent' | 'drafts' | 'starred' | 'all' | 'trash';
+export type MailFolder = 'inbox' | 'sent' | 'drafts' | 'starred' | 'all' | 'spam' | 'trash';
 export const MAIL_FOLDERS: { id: MailFolder; name: string }[] = [
   { id: 'inbox', name: 'Entrada' },
   { id: 'sent', name: 'Enviados' },
   { id: 'drafts', name: 'Borradores guardados' },
   { id: 'starred', name: 'Destacados' },
   { id: 'all', name: 'Todos los correos' },
+  { id: 'spam', name: 'No deseado' },
   { id: 'trash', name: 'Papelera' },
 ];
 
@@ -24,7 +25,9 @@ interface Props {
   folder:MailFolder;onSelectFolder:(folder:MailFolder)=>void;folderEmails:Email[]|null;folderLoading:boolean;onRefresh:()=>void;refreshing:boolean;
   drafts:StoredDraft[];onOpenDraft:(draft:StoredDraft)=>void;onDiscardDraft:(id:string)=>void;
   onCompose:(prefill?:{to:string;subject:string})=>void;onReplyWithAI:(email:Email)=>void;
-  onRestore:(ids:string[])=>Promise<void>;onSetCategory:(email:Email,category:string|null)=>Promise<void>;
+  onRestore:(ids:string[])=>Promise<void>;
+  /** Spam folder: back to the inbox, and the provider learns it was not spam. */
+  onNotSpam:(ids:string[])=>Promise<void>;onSetCategory:(email:Email,category:string|null)=>Promise<void>;
   loadLimit:number;maxLoaded:number;onLoadMore:()=>void;loadingMore:boolean;connected:boolean;
   /** A mail to open, asked for from the chat. The nonce lets the same mail be opened twice. */
   focus?:{id:string;nonce:number}|null;
@@ -49,7 +52,7 @@ export function EmailInbox(p:Props){
     if(emails.some(email=>email.id===p.focus?.id && !email.read))void onMarkRead(p.focus.id);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[p.focus]);
-  const inTrash=folder==='trash',inSent=folder==='sent',inDrafts=folder==='drafts';
+  const inTrash=folder==='trash',inSent=folder==='sent',inDrafts=folder==='drafts',inSpam=folder==='spam';
   const source=folder==='inbox'?emails:(p.folderEmails ?? []);
   const loading=folder!=='inbox' && !inDrafts && p.folderLoading && !p.folderEmails;
   const selected=source.find(email=>email.id===selectedId);
@@ -64,7 +67,8 @@ export function EmailInbox(p:Props){
   const count=(category:string)=>category==='Todos'?source.length:category==='Sin leer'?source.filter(e=>!e.read).length:category==='Con alertas'?source.filter(e=>e.insights && e.insights.level!=='none').length:null;
   const subtitle=inDrafts?`${p.drafts.length} guardado${p.drafts.length===1?'':'s'} · sin enviar`
     :inTrash?(loading?'cargando…':`${source.length} correo${source.length===1?'':'s'} · se eliminan solos a los 30 días`)
-    :loading?'cargando…':`${source.length} cargado${source.length===1?'':'s'}${folder==='inbox' && p.updatedAt?` · actualizado ${p.updatedAt}`:''}`;
+    :inSpam?(loading?'cargando…':`${source.length===1?'1 correo marcado':`${source.length} correos marcados`} como no deseado por ${MAIL}`)
+    :loading?'cargando…':`${source.length} cargado${source.length===1?'':'s'}${folder==='inbox' && p.updatedAt?` · actualizado ${p.updatedAt}`:''}${folder==='all'?' · sin No deseado ni Papelera':''}`;
   function clearFilters(){setQuery('');onSelectCategory('Todos');}
   async function run(task:()=>Promise<void>|void,what=''){if(busy)return;setBusy(true);setBusyWhat(what);try{await task();}finally{setBusy(false);setBusyWhat('');}}
   const who=(email:Email)=>inSent?`Para: ${email.recipient}`:email.senderName;
@@ -104,7 +108,7 @@ export function EmailInbox(p:Props){
         {loading
           ? <div className="pa-empty" role="status"><RefreshCw aria-hidden="true"/><h3>Cargando {folderName.toLowerCase()}…</h3></div>
           : filtered.length===0
-          ? <div className="pa-empty"><Mail aria-hidden="true"/><h3>{source.length===0?(inTrash?'La papelera está vacía':'No hay mensajes aquí'):'Sin coincidencias'}</h3><p>{source.length===0?(inTrash?'Los correos que muevas a la papelera aparecerán aquí durante 30 días.':'Esta carpeta no tiene mensajes cargados. Sincroniza para actualizarla.'):'Prueba otra búsqueda o quita los filtros.'}</p>{source.length>0 && <button type="button" className="pa-btn pa-btn-secondary" onClick={clearFilters}><RefreshCw aria-hidden="true"/>Limpiar filtros</button>}</div>
+          ? <div className="pa-empty"><Mail aria-hidden="true"/><h3>{source.length===0?(inTrash?'La papelera está vacía':inSpam?'No hay correo no deseado':'No hay mensajes aquí'):'Sin coincidencias'}</h3><p>{source.length===0?(inTrash?'Los correos que muevas a la papelera aparecerán aquí durante 30 días.':'Esta carpeta no tiene mensajes cargados. Sincroniza para actualizarla.'):'Prueba otra búsqueda o quita los filtros.'}</p>{source.length>0 && <button type="button" className="pa-btn pa-btn-secondary" onClick={clearFilters}><RefreshCw aria-hidden="true"/>Limpiar filtros</button>}</div>
           : filtered.map(email=>{
             const category=labelsOf(email)[0];
             const manual=manualOf(email).length>0;
@@ -142,7 +146,12 @@ export function EmailInbox(p:Props){
             </div>
             {manualOf(selected).length>0 && <div className="mx-tags">{manualOf(selected).map(c=><span key={c} className="mx-tag mx-manual"><Tag aria-hidden="true"/>{c}</span>)}</div>}
             <div className="mx-reader-actions">
-              {inTrash
+              {inSpam
+                ? <>
+                  <BusyButton className="pa-btn pa-btn-secondary" disabled={busy} busyLabel="Moviendo…" onClick={()=>run(async()=>{await p.onNotSpam([selected.id]);setSelectedId(null);})}><MailCheck aria-hidden="true"/>No es spam · mover a Entrada</BusyButton>
+                  <BusyButton className="pa-btn pa-btn-danger-ghost" disabled={busy} busyLabel="Moviendo…" onClick={()=>run(async()=>{await onTrash([selected.id]);setSelectedId(null);})}><Trash2 aria-hidden="true"/>Mover a la papelera</BusyButton>
+                </>
+                : inTrash
                 ? <BusyButton className="pa-btn pa-btn-primary" disabled={busy} busyLabel="Recuperando…" onClick={()=>run(async()=>{await p.onRestore([selected.id]);setSelectedId(null);})}><Undo2 aria-hidden="true"/>Recuperar a la bandeja de entrada</BusyButton>
                 : <>
                   <button type="button" className="pa-btn pa-btn-primary" onClick={()=>p.onReplyWithAI(selected)}><Sparkles aria-hidden="true"/>Responder con IA</button>
@@ -165,12 +174,13 @@ export function EmailInbox(p:Props){
                   <BusyButton className="pa-btn pa-btn-danger-ghost mx-trash" disabled={busy} busyLabel="Moviendo a la papelera…" onClick={()=>run(async()=>{await onTrash([selected.id]);})}><Trash2 aria-hidden="true"/>Mover a la papelera</BusyButton>
                 </>}
             </div>
-            {!inTrash && <p className="mx-classify-note">La categoría se guarda como etiqueta en tu {MAIL} y tiene prioridad sobre la agrupación automática. Los envíos se aprueban en Acciones.</p>}
+            {inSpam && <p className="mx-classify-note">{MAIL} lo marcó como no deseado. Si no reconoces al remitente, no abras sus enlaces ni adjuntos. «No es spam» lo devuelve a Entrada y le enseña a {MAIL} que es legítimo.</p>}
+            {!inTrash && !inSpam && <p className="mx-classify-note">La categoría se guarda como etiqueta en tu {MAIL} y tiene prioridad sobre la agrupación automática. Los envíos se aprueban en Acciones.</p>}
           </header>
           {selected.insights && <MailSafety report={selected.insights}/>}
           <p className="mx-safe"><ShieldCheck aria-hidden="true"/>Lectura protegida: el contenido activo se bloquea, cada enlace se revisa antes de abrirlo y las imágenes externas no se cargan hasta que lo pidas.</p>
           <MailAttachments key={`att-${selected.id}`} email={selected} risky={!!selected.insights && selected.insights.level!=='none'} onList={p.onListAttachments} onDownload={p.onDownloadAttachment}/>
-          <MailDocument key={selected.id} html={selected.bodyHtml} text={selected.body}/>
+          <MailDocument key={selected.id} html={selected.bodyHtml} text={selected.body} senderDomain={selected.sender.split('@').pop()} verified={selected.insights?.sender?.status==='verified'} knownSender={!!selected.insights?.notes.some(note=>/^Enlaces de seguimiento de .+ ya te ha escrito antes/.test(note))}/>
         </div> : <div className="pa-empty mx-reader-empty"><Mail aria-hidden="true"/><h3>Selecciona un correo</h3><p>{inTrash?'Ábrelo para revisarlo y recuperarlo si lo necesitas.':'Su contenido aparecerá aquí para que lo leas con calma.'}</p></div>}
       </article>
     </div>

@@ -81,12 +81,18 @@ export function describeInsight(kind: InsightRequest, emails: Email[], isReal: b
   if (kind === 'risks') {
     const found = riskyEmails(emails);
     if (!found.length) return `**Sin señales de riesgo**\n${scope} Ninguno muestra señales de phishing o fraude.`;
-    const items = found.slice(0, 8).map((email) => {
-      const info = insightsOf(email);
-      return item(email, `${info.level === 'high' ? '⚠️ ' : ''}${info.label}${info.reasons[0] ? `: ${info.reasons[0]}` : ''}`);
-    });
-    const more = found.length > 8 ? `\nY ${plural(found.length - 8, 'correo más', 'correos más')} en la pestaña Correo (filtro «Con alertas»).` : '';
-    return `**${plural(found.length, 'correo con señales de riesgo', 'correos con señales de riesgo')}**\n${scope}\n\n${items.join('\n')}${more}\n\nNo abras sus enlaces ni adjuntos, y confirma cualquier pago o dato por otro canal.`;
+    const high = found.filter((email) => insightsOf(email).level === 'high');
+    const review = found.filter((email) => insightsOf(email).level !== 'high');
+    const reasonOf = (email: Email) => { const info = insightsOf(email); const first = info.reasons.find((r) => r !== info.sender?.detail) ?? info.reasons[0]; return first ?? info.label; };
+    const block = (list: Email[], prefix: string) => list.slice(0, 6).map((email) => item(email, `${prefix}${reasonOf(email)}`)).join('\n');
+    const more = (list: Email[]) => list.length > 6 ? `\nY ${plural(list.length - 6, 'más', 'más')} en la pestaña Correo (filtro «Con alertas»).` : '';
+    const title = high.length
+      ? `**${plural(high.length, 'correo peligroso', 'correos peligrosos')}${review.length ? ` y ${plural(review.length, 'para revisar', 'para revisar')}` : ''}**`
+      : `**Ningún correo peligroso · ${plural(review.length, 'para revisar', 'para revisar')}**`;
+    const parts = [title, scope];
+    if (high.length) parts.push('', '**Peligrosos:** señales fuertes de fraude o suplantación.', block(high, '⚠️ ') + more(high), '', 'No abras sus enlaces ni adjuntos, y confirma cualquier pago o dato por otro canal.');
+    if (review.length) parts.push('', '**Para revisar:** detalles que conviene comprobar; no significa que sean peligrosos.', block(review, '') + more(review));
+    return parts.join('\n');
   }
   if (kind === 'awaiting') {
     const found = awaitingReply(emails);
@@ -106,7 +112,12 @@ export function describeInsight(kind: InsightRequest, emails: Email[], isReal: b
     `- **${plural(unread.length, 'sin leer', 'sin leer')}**${unread.length ? `\n  El más reciente: «${mailLink(newestFirst(unread)[0])}»` : ''}`,
     `- **${plural(urgent.length, 'urgente o importante', 'urgentes o importantes')}**${urgent.length ? `\n  ${quoted(urgent)}` : ''}`,
     `- **${plural(waiting.length, 'espera tu respuesta', 'esperan tu respuesta')}**${waiting.length ? `\n  ${waiting.slice(0, 3).map((email) => `«${mailLink(email)}» de ${email.senderName}`).join(' · ')}` : ''}`,
-    `- **${plural(risky.length, 'con señales de riesgo', 'con señales de riesgo')}**${risky.length ? '\n  Revísalos antes de abrir enlaces o adjuntos' : ''}`,
+    (() => {
+      const high = risky.filter((email) => insightsOf(email).level === 'high').length, review = risky.length - high;
+      return high
+        ? `- **${plural(high, 'peligroso', 'peligrosos')}**${review ? ` y ${review} para revisar` : ''}\n  No abras sus enlaces ni adjuntos sin confirmarlo por otro canal`
+        : `- **Ningún correo peligroso**${review ? `\n  ${plural(review, 'tiene', 'tienen')} detalles para revisar, nada grave` : ''}`;
+    })(),
     `- **${plural(automated.length, 'notificación o boletín', 'notificaciones o boletines')}**${automated.length ? '\n  Puedes limpiarlos con «Limpiar promociones»' : ''}`,
   ];
   return parts.join('\n');

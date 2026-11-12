@@ -6,15 +6,15 @@ import {checkLink} from '@shared/mail/mail-insights';
 /** Web addresses written as plain text, for messages without HTML. */
 const TEXT_LINK=/(?:https?:\/\/|www\.)[^\s<>"']+/gi;
 
-export function MailDocument({html,text}:{html?:string;text:string}){
+export function MailDocument({html,text,senderDomain,verified,knownSender}:{html?:string;text:string;senderDomain?:string;verified?:boolean;knownSender?:boolean}){
   const [images,setImages]=useState(false),[plain,setPlain]=useState(false);
   const content=useMemo(()=>mailDocument(html || '',images),[html,images]);
   // Every link is checked on this device before it is offered: where it really goes and whether it tries to deceive.
   const links=useMemo(()=>{
     const found=html?content.links:[...new Set((text.match(TEXT_LINK) ?? []).map(link=>link.replace(/[.,;)\]}]+$/,'')))].slice(0,100).map(href=>({href,text:''}));
-    return found.map(link=>({...link,check:checkLink(link.href,link.text)}));
-  },[html,text,content.links]);
-  const warned=links.filter(link=>link.check.findings.length>0).length;
+    return found.map(link=>({...link,check:checkLink(link.href,link.text,{senderDomain,verified,knownSender})}));
+  },[html,text,content.links,senderDomain,verified,knownSender]);
+  const warned=links.filter(link=>link.check.findings.some(f=>f.weight>0)).length;
   const [linksOpen,setLinksOpen]=useState(warned>0);
   /** Shown when the person clicks inside the message, where links cannot open. */
   const [hint,setHint]=useState(false);
@@ -45,8 +45,9 @@ export function MailDocument({html,text}:{html?:string;text:string}){
     const {check}=link;
     if(!check.url || check.blocked){window.alert('Este enlace no se puede abrir de forma segura.\n\n'+link.href);return;}
     const destination=check.url.href;
-    const message=check.findings.length
-      ? `${check.danger?'⚠️ ESTE ENLACE PARECE ENGAÑOSO':'Revisa este enlace antes de abrirlo'}\n\n${check.findings.map(f=>'• '+f.reason).join('\n')}\n\nVa a: ${check.domain}\n${destination}\n\n${check.danger?'¿Seguro que quieres abrirlo? Si no esperabas este correo, no lo abras.':'¿Abrirlo en una pestaña nueva?'}`
+    const warnings=check.findings.filter(f=>f.weight>0);
+    const message=warnings.length
+      ? `${check.danger?'⚠️ ESTE ENLACE PARECE ENGAÑOSO':'Revisa este enlace antes de abrirlo'}\n\n${warnings.map(f=>'• '+f.reason).join('\n')}\n\nVa a: ${check.domain}\n${destination}\n\n${check.danger?'¿Seguro que quieres abrirlo? Si no esperabas este correo, no lo abras.':'¿Abrirlo en una pestaña nueva?'}`
       : `Vas a abrir un sitio externo:\n\n${check.domain}\n${destination}\n\nNexoMail revisó la dirección y no encontró señales de engaño, pero no puede garantizar que el sitio sea seguro. ¿Abrirlo en una pestaña nueva?`;
     if(window.confirm(message))window.open(destination,'_blank','noopener,noreferrer');
   }
@@ -78,7 +79,7 @@ export function MailDocument({html,text}:{html?:string;text:string}){
       <ul className="lk-list">
         {links.map(link=>{
           const {check}=link;
-          const tone=check.danger?'danger':check.findings.length?'warn':'ok';
+          const tone=check.danger?'danger':check.findings.some(f=>f.weight>0)?'warn':'ok';
           return <li key={link.href} className={`lk-item lk-${tone}`}>
             <button type="button" onClick={()=>open(link)} title={link.href}>
               <span className="lk-icon" aria-hidden="true">{tone==='danger'?<ShieldAlert/>:tone==='warn'?<AlertTriangle/>:<ExternalLink/>}</span>
@@ -86,7 +87,8 @@ export function MailDocument({html,text}:{html?:string;text:string}){
                 <strong>{check.blocked?'Enlace bloqueado':check.domain || 'Destino no interpretable'}</strong>
                 {link.text && link.text!==link.href && <small className="lk-shown">Texto del enlace: «{link.text.slice(0,80)}»</small>}
                 <small className="lk-url">{link.href}</small>
-                {check.findings.map(f=><small key={f.reason} className="lk-reason">{f.reason}</small>)}
+                {check.declared && <small className="lk-shown">Destino que declara el enlace: {check.declared.length>90?check.declared.slice(0,90)+'…':check.declared}</small>}
+                {check.findings.map(f=><small key={f.reason} className={f.weight>0?"lk-reason":"lk-info"}>{f.reason}</small>)}
               </span>
             </button>
           </li>;

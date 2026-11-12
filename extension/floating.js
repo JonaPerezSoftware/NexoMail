@@ -30,6 +30,10 @@ if(!['gmail','outlook'].includes(provider) || !bridge || !allowedOrigins.has(par
   document.getElementById('open-full').addEventListener('click',()=>chrome.tabs.create({url:chrome.runtime.getURL(`apps/${provider}/index.html`)}));
   for(const button of document.querySelectorAll('[data-section]'))button.addEventListener('click',()=>{select(button.dataset.section);sendSection();});
   window.addEventListener('message',event=>{
+    if(event.source===window.parent && event.origin===parentOrigin && event.data?.bridge===bridge && event.data.type==='EMAILAGENT_MAIL_CHANGED'){
+      frame?.contentWindow?.postMessage({type:'EMAILAGENT_MAIL_CHANGED',bridge},extensionOrigin);
+      return;
+    }
     if(event.source===window.parent && event.origin===parentOrigin && event.data?.bridge===bridge && event.data.type==='EMAILAGENT_DISPLAY_MODE'){
       if(typeof event.data.expanded==='boolean')displayMode(event.data.expanded);
       return;

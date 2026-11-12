@@ -27,6 +27,8 @@ export interface Email {
   snippet: string;
   body: string;
   bodyHtml?: string;
+  /** Demo only: Authentication-Results headers, so the demo mailbox shows sender verification. */
+  authHeaders?: { name: string; value: string }[];
   date: string;
   timestamp: number;
   read: boolean;

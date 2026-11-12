@@ -13,3 +13,7 @@ dist/
 
 # Contiene la contraseña real de la base de datos; no se sube.
 DEPLOY_DATABASE.sql
+
+# Script para crear la base de datos y su guía de instalación: solo en este equipo.
+/BASE_DE_DATOS_NEXOMAIL.sql
+/docs/BASE_DE_DATOS.md

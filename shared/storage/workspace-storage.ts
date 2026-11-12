@@ -45,7 +45,7 @@ export class WorkspaceStorage {
       method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json','X-EmailAgent-Token':this.config.pairingToken,'Authorization':'Bearer '+token},
       body:encoded,signal:AbortSignal.timeout(16000)});
     const data=await response.json();
-    if(!response.ok){if(response.status===409)this.conflict=true;throw new Error(typeof data.detail==='string'?data.detail:data.message || 'No se confirmó el guardado en PostgreSQL.');}
+    if(!response.ok){if(response.status===409)this.conflict=true;throw Object.assign(new Error(typeof data.detail==='string'?data.detail:data.message || 'No se confirmó el guardado en PostgreSQL.'),{status:response.status});}
     // A late read must not hydrate a closed instance. A confirmed write still updates its revision.
     if(!allowed())throw new Error('La cuenta cambió.');
     return data;
@@ -53,7 +53,18 @@ export class WorkspaceStorage {
   async load():Promise<StoredWorkspace>{
     this.status('Conectando con PostgreSQL…');
     try{
-      const data=await this.request('/workspace') as StoredWorkspace;
+      // A temporary failure (provider rate limit, no answer) is retried twice; a rejected authorization is not.
+      let data:StoredWorkspace|undefined;
+      for(let attempt=0;!data;attempt++){
+        try{data=await this.request('/workspace') as StoredWorkspace;}
+        catch(error){
+          const status=(error as {status?:number}).status;
+          const temporary=status===undefined || status===503 || status===429 || status>=500;
+          if(!temporary || attempt>=2 || !this.active || (error as Error).message==='La cuenta cambió.')throw error;
+          this.status(`Reintentando la conexión con PostgreSQL… (${(error as Error).message})`);
+          await new Promise(resolve=>setTimeout(resolve,attempt===0?3000:8000));
+        }
+      }
       data.sections.chat.data=data.sections.chat.data.map(message=>({...message,created_at:new Date(message.created_at).toISOString()}));
       data.sections.drafts.data=data.sections.drafts.data.map(draft=>({...draft,created_at:new Date(draft.created_at).toISOString()}));
       for(const section of ['chat','drafts','preferences'] as Section[]){this.revisions[section]=data.sections[section].revision;this.snapshots[section]=JSON.stringify(data.sections[section].data);}

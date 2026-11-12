@@ -19,6 +19,10 @@ export interface MailProvider {
   fetchEmails(query?: string, maxResults?: number): Promise<Email[]>;
   trashEmails(ids: string[]): Promise<void>;
   untrashEmails(ids: string[]): Promise<void>;
+  /** A cheap value that changes when new mail arrives (one tiny request), so the inbox is downloaded only then. */
+  changeMarker(): Promise<string>;
+  /** Moves messages out of spam into the inbox (the provider also learns they were not spam). */
+  notSpamEmails(ids: string[]): Promise<void>;
   labelEmails(ids: string[], label: string): Promise<void>;
   removeLabel(ids: string[], label: string): Promise<void>;
   sendEmail(recipient: string, subject: string, body: string, attachments?: MailFile[]): Promise<void>;

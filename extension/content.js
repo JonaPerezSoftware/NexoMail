@@ -44,6 +44,9 @@
 
   let ball={x:innerWidth-80,y:innerHeight-82};
   let expanded=false,previousWindow=null;
+  // Gmail shows the unread count in the tab title: when it changes, new mail has probably arrived.
+  let lastTitle=document.title,titleTimer=0;
+  new MutationObserver(()=>{if(document.title===lastTitle)return;lastTitle=document.title;clearTimeout(titleTimer);titleTimer=setTimeout(()=>{if(initialized && frame.contentWindow)frame.contentWindow.postMessage({type:'EMAILAGENT_MAIL_CHANGED',bridge},extensionOrigin);},1500);}).observe(document.querySelector('title') || document.head,{childList:true,subtree:true,characterData:true});
   function sendDisplayMode(){if(initialized)frame.contentWindow.postMessage({type:'EMAILAGENT_DISPLAY_MODE',expanded,bridge},extensionOrigin);}
   frame.addEventListener('load',sendDisplayMode);
   let position=null,initialized=false,interacted=false,lastDrag=0,persistTimer,shellTimer;

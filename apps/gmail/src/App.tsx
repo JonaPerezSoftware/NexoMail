@@ -19,11 +19,22 @@ import { guardrails } from './services/guardrails';
 import type { Email, PendingAction, AuditLog, AgentStep, MailFile, MailAttachment } from './types/email';
 import { Mail, ShieldAlert, History, AlertTriangle, Bot, Settings, LayoutDashboard } from 'lucide-react';
 import { analyzeMail } from '@shared/mail/mail-insights';
+import { senderAuthentication } from '@shared/mail/sender-intel';
+import { observeSenders, applySenderContext, needsSentScan, markSentScan } from './services/senderHistory';
+import { learnContacts, recordSent, sentScanSize, markSentScanned } from './services/contacts';
 import '@shared/styles/mail-insights.css';
 import '@shared/styles/nexo-ui.css';
 import './gmail-reader.css';
 import { WorkspacePages } from './components/WorkspacePages';
 import { PrivacyConsent, recordConsent } from './components/PrivacyConsent';
+
+/** Adds what NexoMail knows from this account's own history (look-alike domains, new senders, hijacked threads). */
+function withSenderContext(list:Email[]):Email[]{
+  const session=mailProvider.getSessionKey();
+  observeSenders(session,list);
+  learnContacts(session,list,mailProvider.accountEmail());
+  return applySenderContext(session,list);
+}
 
 export function App() {
   const database=useRef<WorkspaceStorage|null>(null);
@@ -39,9 +50,19 @@ export function App() {
   const attemptedActions=useRef(new Set<string>());
   const [rawEmails, setEmails] = useState<Email[]>([]);
   const refreshBusy=useRef(false);
+  /** Pending background read of the sent folder (contacts), so refreshes never start two. */
+  const sentScanTimer=useRef(0);
   const [lastSync,setLastSync]=useState<Date|null>(null);
-  const emails=useMemo(()=>rawEmails.map(email=>({...email,insights:email.insights || analyzeMail({subject:email.subject,sender:email.sender,senderName:email.senderName,text:email.body,labels:[...email.labels,email.category]})})),[rawEmails]);
+  /** Bumped when the sent folder teaches NexoMail new contacts, so the analysis is redone. */
+  const [historyVersion,setHistoryVersion]=useState(0);
+  const emails=useMemo(()=>withSenderContext(rawEmails.map(email=>({...email,insights:email.insights || analyzeMail({subject:email.subject,sender:email.sender,senderName:email.senderName,text:email.body,html:email.bodyHtml,
+    auth:email.authHeaders?senderAuthentication(email.authHeaders,email.sender):undefined,labels:[...email.labels,email.category]})}))),
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  [rawEmails,historyVersion]);
   const securityAlerts=emails.filter(email=>email.insights?.level!=='none');
+  /** Strong signs of fraud, apart from details worth a look: one red count for everything made people distrust real mail. */
+  const dangerousMail=securityAlerts.filter(email=>email.insights?.level==='high');
+  const reviewMail=securityAlerts.filter(email=>email.insights?.level==='review');
   const [isGmailConnected, setIsGmailConnected] = useState<boolean>(mailProvider.isConnected());
   const [gmailError, setGmailError] = useState<string | null>(null);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
@@ -96,7 +117,7 @@ export function App() {
   const addAudit = (actionType: AuditLog['actionType'], prompt: string, executionStatus: AuditLog['executionStatus'], details: string) =>
     setAuditLogs(prev => [{ id: crypto.randomUUID(), timestamp: new Date().toISOString(), actionType, prompt, executionStatus, details }, ...prev]);
 
-  const FOLDER_QUERIES: Record<Exclude<MailFolder, 'inbox' | 'drafts'>, string> = { sent: 'in:sent', starred: 'is:starred', all: '', trash: 'in:trash' };
+  const FOLDER_QUERIES: Record<Exclude<MailFolder, 'inbox' | 'drafts'>, string> = { sent: 'in:sent', starred: 'is:starred', all: '', spam: 'in:spam', trash: 'in:trash' };
   /** Folders other than Entrada are loaded on demand, only when the person opens them. */
   const loadFolder = async (folder: MailFolder) => {
     if (folder === 'inbox' || folder === 'drafts') return;
@@ -105,7 +126,7 @@ export function App() {
       if (mailProvider.isConnected()) setFolderEmails(await mailProvider.fetchEmails(FOLDER_QUERIES[folder], loadLimitRef.current));
       else {
         const all = emailProvider.getEmails();
-        setFolderEmails(folder === 'trash' ? emailProvider.getTrashedEmails() : folder === 'sent' ? all.filter(e => e.labels.includes('Enviado')) : folder === 'starred' ? all.filter(e => e.starred) : all);
+        setFolderEmails(folder === 'trash' ? emailProvider.getTrashedEmails() : folder === 'spam' ? all.filter(e => e.labels.some(label => label.toLowerCase() === 'spam')) : folder === 'sent' ? all.filter(e => e.labels.includes('Enviado')) : folder === 'starred' ? all.filter(e => e.starred) : all);
       }
     } catch (error) {
       setFolderEmails([]);
@@ -171,6 +192,19 @@ export function App() {
       alert(error instanceof Error ? error.message : 'No se pudo recuperar el correo.');
     }
     // Leaves the trash at once; the inbox refresh downloads only the recovered messages.
+    setFolderEmails(prev => prev ? prev.filter(email => !ids.includes(email.id)) : prev);
+    await refreshEmails();
+  };
+
+  const handleNotSpam = async (ids: string[]) => {
+    try {
+      if (mailProvider.isConnected()) await mailProvider.notSpamEmails(ids);
+      else emailProvider.notSpam(ids);
+      addAudit('RESTORE_EMAIL', 'Marcado como «no es spam»', 'HUMAN_APPROVED', `${ids.length} correo(s) movido(s) de No deseado a la bandeja de entrada.`);
+    } catch (error) {
+      addAudit('RESTORE_EMAIL', 'Marcado como «no es spam»', 'FAILED', error instanceof Error ? error.message : 'No se pudo mover.');
+      alert(error instanceof Error ? error.message : 'No se pudo mover el correo.');
+    }
     setFolderEmails(prev => prev ? prev.filter(email => !ids.includes(email.id)) : prev);
     await refreshEmails();
   };
@@ -263,7 +297,17 @@ export function App() {
         const refreshKey=mailProvider.getSessionKey();
         const realEmails = await mailProvider.fetchEmails('in:inbox', loadLimitRef.current);
         if(refreshKey!==mailProvider.getSessionKey())return;
-        setEmails(realEmails);setLastSync(new Date());agentEngine.setInboxSnapshot(realEmails);
+        setEmails(realEmails);setLastSync(new Date());agentEngine.setInboxSnapshot(withSenderContext(realEmails));
+        // The sent folder tells NexoMail who your contacts are: the first time up to 200 messages back (so the AI
+        // remembers addresses you wrote to long ago), then the newest ones once a day. Read-only, in the background,
+        // and 20 s after connecting, so it never competes with loading the inbox or verifying the account.
+        const scan=Math.max(sentScanSize(refreshKey),needsSentScan(refreshKey)?25:0);
+        if(scan && !sentScanTimer.current)sentScanTimer.current=window.setTimeout(()=>{
+          sentScanTimer.current=0;
+          if(refreshKey!==mailProvider.getSessionKey())return;
+          markSentScan(refreshKey);
+          void mailProvider.fetchEmails('in:sent',scan).then(sent=>{if(refreshKey!==mailProvider.getSessionKey())return;observeSenders(refreshKey,sent);learnContacts(refreshKey,sent,mailProvider.accountEmail());markSentScanned(refreshKey);setHistoryVersion(v=>v+1);}).catch(()=>{});
+        },20000);
         setIsGmailConnected(true);
         return;
       } catch (err: any) {
@@ -283,15 +327,53 @@ export function App() {
     refreshEmails();
   }, []);
 
-  // Every minute while visible. Pending proposals do not stop it: they keep their own copy of the mails they
-  // act on, and restored ones could otherwise freeze the list for days. It only waits while the agent is
-  // answering, an approval is running, or the account dialog is open.
+  // Every minute while visible, and right away when you come back to the tab after a while. Pending proposals do
+  // not stop it (they keep their own copy of the mails they act on). It only waits while the agent is answering,
+  // an approval is running or the account dialog is open. The latest values are read through a ref, so using the
+  // chat does not restart the minute (before, chatting more than once a minute meant it never ran).
+  const autoRefresh=useRef({busy:false,folder:mailFolder,last:0});
+  autoRefresh.current.busy=isProcessing || isAuthModalOpen;
+  autoRefresh.current.folder=mailFolder;
   useEffect(()=>{
-    const timer=window.setInterval(()=>{
-      if(document.visibilityState==='visible' && mailProvider.isConnected() && !isProcessing && !executingActions.current.size && !isAuthModalOpen)void refreshEmails();
-    },60000);
-    return()=>window.clearInterval(timer);
-  },[isProcessing,isAuthModalOpen]);
+    const tick=async(force=false)=>{
+      const state=autoRefresh.current;
+      if(document.visibilityState!=='visible' || !mailProvider.isConnected() || state.busy || executingActions.current.size)return;
+      if(!force && Date.now()-state.last<55000)return;
+      state.last=Date.now();
+      await refreshEmails();
+      // The folder on screen (Enviados, No deseado…) is refreshed too, not only Entrada.
+      const folder=autoRefresh.current.folder;
+      if(folder!=='inbox' && folder!=='drafts')await loadFolder(folder);
+    };
+    const timer=window.setInterval(()=>void tick(true),60000);
+    // Every 10 s a tiny request asks the provider whether anything changed; the inbox is downloaded only then,
+    // so new mail shows up in seconds without spending quota.
+    let marker='',checking=false;
+    const check=async()=>{
+      const state=autoRefresh.current;
+      if(checking || document.visibilityState!=='visible' || !mailProvider.isConnected() || state.busy || executingActions.current.size)return;
+      checking=true;
+      try{
+        const session=mailProvider.getSessionKey();
+        const next=await mailProvider.changeMarker();
+        if(next && session===mailProvider.getSessionKey()){
+          const changed=!!marker && next!==marker;
+          marker=next;
+          if(changed)await tick(true);
+        }
+      }catch{/* the minute timer stays as a fallback */}finally{checking=false;}
+    };
+    const quick=window.setInterval(()=>void check(),10000);
+    // The mail page itself (Gmail's unread count in the tab title) tells the panel the moment something arrives.
+    const fromPage=(event:MessageEvent)=>{if(event.source===window.parent && event.origin===location.origin && event.data?.type==='EMAILAGENT_MAIL_CHANGED' && (!floatingBridge || event.data.bridge===floatingBridge))void check();};
+    window.addEventListener('message',fromPage);
+    // Back to the tab or the window after more than ~half a minute: refresh now instead of waiting for the timer.
+    const back=()=>{if(document.visibilityState==='visible' && Date.now()-autoRefresh.current.last>30000)void tick(true);};
+    document.addEventListener('visibilitychange',back);
+    window.addEventListener('focus',back);
+    return()=>{window.clearInterval(timer);window.clearInterval(quick);window.removeEventListener('message',fromPage);document.removeEventListener('visibilitychange',back);window.removeEventListener('focus',back);};
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[]);
 
   useEffect(()=>{
     database.current?.close();database.current=null;setStorageReady(false);setProposalsReady(false);setStorageLoading(false);
@@ -421,6 +503,7 @@ export function App() {
       } else if (action.actionType === 'SEND_EMAIL') {
         if (isReal && action.payload.recipient && action.payload.subject && action.payload.body) {
           await mailProvider.sendEmail(action.payload.recipient, action.payload.subject, action.payload.body, action.payload.attachments);
+          recordSent(mailProvider.getSessionKey(), action.payload.recipient);
         } else {
           emailProvider.addDraftOrSentEmail({
             sender: 'usuario@miempresa.com',
@@ -534,9 +617,18 @@ La propuesta sigue en Acciones para que la apruebes de nuevo.`);
         pendingCount={pendingActions.length} totalEmails={emails.length} unreadCount={unreadCount}
         onRefresh={()=>void syncMail()} refreshing={syncing || folderLoading} updatedAt={lastSync} isGmailConnected={isGmailConnected}
         onOpenGmailAuth={()=>{if(isGmailConnected)setIsAuthModalOpen(true);else void authorizeGmail();}} onOpenSettings={()=>navigate('settings')} onOpenPending={()=>navigate('pending')} authorizing={isAuthorizing}
-        center={securityAlerts.length>0 && <details className="insights-summary risk-pop">
-          <summary title="Ver los correos con señales de riesgo"><AlertTriangle aria-hidden="true"/><span className="lbl-long">{securityAlerts.length===1?'1 correo con señales de riesgo':securityAlerts.length+' correos con señales de riesgo'}</span><span className="lbl-short">{securityAlerts.length} con riesgo</span></summary>
-          <div className="risk-pop-panel" role="region" aria-label="Correos con señales de riesgo"><ul>{securityAlerts.map(email=><li key={email.id}><button type="button" className="md-mail-link" onClick={event=>{event.currentTarget.closest('details')?.removeAttribute('open');openMailFromChat(email.id);}}>{email.subject || '(Sin asunto)'}</button> — {email.insights?.label}<ul>{email.insights?.reasons.map(reason=><li key={reason}>{reason}</li>)}</ul></li>)}</ul><p>Comprueba estas solicitudes por otro canal antes de responder o abrir enlaces.</p></div>
+        center={securityAlerts.length>0 && <details className={`insights-summary risk-pop ${dangerousMail.length?'risk-pop-danger':'risk-pop-review'}`}>
+          <summary title={dangerousMail.length?'Ver los correos con señales fuertes de fraude':'Ver los correos con detalles que conviene revisar'}><AlertTriangle aria-hidden="true"/>
+            {dangerousMail.length
+              ? <><span className="lbl-long">{dangerousMail.length===1?'1 correo peligroso':dangerousMail.length+' correos peligrosos'}</span><span className="lbl-short">{dangerousMail.length} peligroso{dangerousMail.length===1?'':'s'}</span></>
+              : <><span className="lbl-long">{reviewMail.length===1?'1 correo para revisar':reviewMail.length+' correos para revisar'}</span><span className="lbl-short">{reviewMail.length} para revisar</span></>}
+          </summary>
+          <div className="risk-pop-panel" role="region" aria-label="Correos con avisos de seguridad">
+            {([['Peligrosos','Señales fuertes de fraude o suplantación. No abras sus enlaces ni adjuntos y confirma por otro canal.',dangerousMail],['Para revisar','Detalles que conviene comprobar. No significa que sean peligrosos.',reviewMail]] as const).filter(([, ,list])=>list.length>0).map(([title,hint,list])=><section key={title} className="risk-pop-group">
+              <h3>{title} <span>{list.length}</span></h3><p>{hint}</p>
+              <ul>{list.map(email=><li key={email.id}><button type="button" className="md-mail-link" onClick={event=>{event.currentTarget.closest('details')?.removeAttribute('open');openMailFromChat(email.id);}}>{email.subject || '(Sin asunto)'}</button>{email.insights?.sender?.status==='verified'?' · remitente verificado':''}<ul>{email.insights?.reasons.filter(reason=>reason!==email.insights?.sender?.detail).map(reason=><li key={reason}>{reason}</li>)}</ul></li>)}</ul>
+            </section>)}
+          </div>
         </details>}/>
       {isAuthorizing && <div className="storage-status" role="status">Esperando autorización en {ACCOUNT}…</div>}
       {gmailError && <div className="api-alert-banner" role="alert"><AlertTriangle size={17}/><span>{gmailError}</span><button disabled={isAuthorizing} onClick={()=>void authorizeGmail()} className="workspace-button">Reautorizar con {ACCOUNT}</button></div>}
@@ -552,7 +644,7 @@ La propuesta sigue en Acciones para que la apruebes de nuevo.`);
             <AgentChat active={currentView==='chat'} externalPrompt={agentPrompt} onSendPrompt={handleSendPrompt} isProcessing={isProcessing || storageLoading} restoredMessages={restoredChat} onHistoryChange={saveChat} onOpenMail={openMailFromChat}
               onClearHistory={()=>agentEngine.clearHistory()}/>
           </section>
-          <section className="workspace-page" hidden={currentView!=='inbox'}><EmailInbox updatedAt={lastSync?lastSync.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):undefined} automatic={autoGrouping} onAutomaticChange={setAutoGrouping} emails={emails} onMarkRead={handleMarkRead} onTrash={handleTrash} selectedCategory={selectedCategory} onSelectCategory={setSelectedCategory} folder={mailFolder} onSelectFolder={selectFolder} folderEmails={folderEmails} folderLoading={folderLoading} onRefresh={()=>void syncMail()} refreshing={syncing || folderLoading} drafts={savedDrafts} onOpenDraft={draft=>setCompose({to:draft.to,subject:draft.subject,body:draft.body,files:[],draftId:draft.id})} onDiscardDraft={id=>setSavedDrafts(list=>list.filter(d=>d.id!==id))} onCompose={prefill=>setCompose({to:prefill?.to ?? '',subject:prefill?.subject ?? '',body:'',files:[]})} onReplyWithAI={replyWithAI} onRestore={handleRestore} onSetCategory={handleSetCategory} onListAttachments={listAttachments} onDownloadAttachment={downloadAttachment} loadLimit={loadLimit} maxLoaded={MAX_LOADED} onLoadMore={()=>void loadMore()} loadingMore={loadingMore} connected={isGmailConnected} focus={mailFocus}/></section>
+          <section className="workspace-page" hidden={currentView!=='inbox'}><EmailInbox updatedAt={lastSync?lastSync.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):undefined} automatic={autoGrouping} onAutomaticChange={setAutoGrouping} emails={emails} onMarkRead={handleMarkRead} onTrash={handleTrash} selectedCategory={selectedCategory} onSelectCategory={setSelectedCategory} folder={mailFolder} onSelectFolder={selectFolder} folderEmails={folderEmails} folderLoading={folderLoading} onRefresh={()=>void syncMail()} refreshing={syncing || folderLoading} drafts={savedDrafts} onOpenDraft={draft=>setCompose({to:draft.to,subject:draft.subject,body:draft.body,files:[],draftId:draft.id})} onDiscardDraft={id=>setSavedDrafts(list=>list.filter(d=>d.id!==id))} onCompose={prefill=>setCompose({to:prefill?.to ?? '',subject:prefill?.subject ?? '',body:'',files:[]})} onReplyWithAI={replyWithAI} onRestore={handleRestore} onNotSpam={handleNotSpam} onSetCategory={handleSetCategory} onListAttachments={listAttachments} onDownloadAttachment={downloadAttachment} loadLimit={loadLimit} maxLoaded={MAX_LOADED} onLoadMore={()=>void loadMore()} loadingMore={loadingMore} connected={isGmailConnected} focus={mailFocus}/></section>
           <section className="workspace-page workspace-scroll page-narrow" hidden={currentView!=='pending'}><div className="workspace-section-heading"><ShieldAlert size={21}/><h2>Acciones pendientes</h2><span className="workspace-count">{pendingActions.length}</span></div><p className="pa-intro">Revisa el destinatario y el contenido. Nada se ejecuta hasta que lo apruebes.</p><PendingActionsList pendingActions={pendingActions} onApprove={handleApproveAction} onReject={handleRejectAction} onGoToChat={()=>navigate('chat')} onChange={()=>setPendingActions(list=>[...list])}/></section>
           <section className="workspace-page workspace-scroll page-medium" hidden={currentView!=='audit'}><AuditLogView logs={auditLogs}/></section>
           {(currentView==='summary' || currentView==='settings') && <WorkspacePages storageStatus={storageStatus} storageReady={storageReady} onEraseStorage={eraseStoredData} view={currentView} emails={emails} pendingCount={pendingActions.length} logCount={auditLogs.length} theme={theme} strictMode={strictMode} onToggleTheme={handleToggleTheme} onToggleStrictMode={handleToggleStrictMode} onAuthorize={async()=>{if(isGmailConnected)setIsAuthModalOpen(true);else await authorizeGmail();}} authorizing={isAuthorizing} connected={isGmailConnected} mailCount={mailCount} onMailCount={changeMailCount}/>}

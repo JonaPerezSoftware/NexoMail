@@ -1,7 +1,7 @@
 """All account identifiers come from a provider-verified access token, never a client email."""
 from datetime import datetime, timezone
 from typing import Literal, Any
-import hashlib,json,time,uuid,threading
+import hashlib,json,time,uuid,threading,logging
 from urllib.request import Request,urlopen,HTTPRedirectHandler,build_opener
 from urllib.error import HTTPError,URLError
 from fastapi import APIRouter,Header,HTTPException
@@ -9,6 +9,7 @@ from pydantic import BaseModel,ConfigDict,Field,ValidationError
 from app.storage.database import database
 
 router=APIRouter(prefix='/storage',tags=['PostgreSQL'])
+logger=logging.getLogger('agente-ia-outlook')
 Provider=Literal['gmail','microsoft']
 Section=Literal['chat','drafts','preferences']
 _profiles:dict[tuple[str,str],tuple[float,dict]]={}
@@ -28,13 +29,35 @@ def identity(provider:Provider,authorization:str):
         cached=_profiles.get(key)
         if cached and cached[0]>time.monotonic():return cached[1]
     url='https://gmail.googleapis.com/gmail/v1/users/me/profile' if provider=='gmail' else 'https://graph.microsoft.com/v1.0/me?$select=id,mail,userPrincipalName,displayName'
-    try:
-        with build_opener(NoRedirect()).open(Request(url,headers={'Authorization':'Bearer '+token,'Accept':'application/json'}),timeout=10) as response:
-            profile=json.loads(response.read(32000))
-    except HTTPError as error:
-        raise HTTPException(401 if error.code in (401,403) else 503,'No se pudo verificar la cuenta con el proveedor. Renueva la autorización o vuelve a intentarlo.') from None
-    except (URLError,TimeoutError,ValueError):
-        raise HTTPException(503,'El proveedor no respondió al verificar la cuenta. No se accedió a otros historiales.') from None
+    name='Gmail' if provider=='gmail' else 'Microsoft'
+    profile=None
+    # Rate limits (429) and server errors are temporary: two short retries before giving up.
+    for attempt in range(3):
+        try:
+            with build_opener(NoRedirect()).open(Request(url,headers={'Authorization':'Bearer '+token,'Accept':'application/json'}),timeout=10) as response:
+                profile=json.loads(response.read(32000))
+            break
+        except HTTPError as error:
+            reason=''
+            try:
+                detail=json.loads(error.read(4000) or b'{}').get('error',{})
+                reason=(detail.get('status') or detail.get('code') or '') if isinstance(detail,dict) else str(detail)
+            except (ValueError,AttributeError):pass
+            # Only the status and the provider's reason code are logged, never the token.
+            logger.warning('Verificación de cuenta %s: HTTP %s %s (intento %s)',provider,error.code,reason,attempt+1)
+            if (error.code==429 or error.code>=500) and attempt<2:
+                time.sleep(0.8*(attempt+1));continue
+            if error.code==401:
+                raise HTTPException(401,f'{name} rechazó la autorización guardada (caducó o se revocó). Pulsa «Reautorizar con Google» o vuelve a conectar la cuenta.') from None
+            if error.code==403:
+                raise HTTPException(403,f'{name} no permite leer el perfil de la cuenta ({reason or "acceso denegado"}). Comprueba que la API de Gmail esté habilitada y que aceptaste los permisos al conectar.') from None
+            if error.code==429:
+                raise HTTPException(503,f'{name} limitó temporalmente las peticiones de tu cuenta. Espera un minuto: NexoMail volverá a intentarlo.') from None
+            raise HTTPException(503,f'{name} no pudo verificar la cuenta en este momento (error {error.code}). NexoMail volverá a intentarlo.') from None
+        except (URLError,TimeoutError,ValueError):
+            if attempt<2:
+                time.sleep(0.8*(attempt+1));continue
+            raise HTTPException(503,'El proveedor no respondió al verificar la cuenta. No se accedió a otros historiales.') from None
     email=(profile.get('emailAddress') if provider=='gmail' else profile.get('mail') or profile.get('userPrincipalName') or '').strip().lower()
     subject=email if provider=='gmail' else profile.get('id','')
     if not email or not subject or len(email)>320 or len(subject)>512:

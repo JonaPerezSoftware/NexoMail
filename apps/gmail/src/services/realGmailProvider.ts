@@ -1,4 +1,6 @@
 import { analyzeMail, inspectHtml } from '@shared/mail/mail-insights';
+import { senderAuthentication } from '@shared/mail/sender-intel';
+import { hasLinks, toHtml, toPlainText } from './mailLinks';
 import type { Email , MailFile, MailAttachment} from '../types/email';
 import { base64ToBlob } from './mailFiles';
 import { MANUAL_CATEGORIES } from '../types/email';
@@ -208,7 +210,8 @@ export class RealGmailProvider {
     const labelNames=await this.userLabelNames(token).catch(()=>new Map<string,string>());
     try {
       // 1. List message IDs
-      const listUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=${maxResults}`;
+      // Spam and trash are only listed when asked for explicitly (in:spam, in:trash).
+      const listUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=${maxResults}${/\bin:(spam|trash)\b/.test(query) ? '&includeSpamTrash=true' : ''}`;
       const listRes = await this.gmailRequest(listUrl, {
         headers: { Authorization: `Bearer ${token}` }
       });
@@ -299,7 +302,9 @@ export class RealGmailProvider {
     const html=htmls.join('\n'),plain=texts.join('\n');
     const body=plain || (html?inspectHtml(html).text:'') || msg.snippet || '';
     partial=partial || (!plain && !html);
-    const insights=analyzeMail({subject,sender:senderEmail,senderName,text:body,html,
+    // Gmail writes its SPF/DKIM/DMARC verdict in the topmost Authentication-Results header.
+    const auth=senderAuthentication(headers.map((h:any)=>({name:String(h.name || ''),value:String(h.value || '')})),senderEmail);
+    const insights=analyzeMail({subject,sender:senderEmail,senderName,text:body,html,auth,
       labels:msg.labelIds || [],filenames,replyTo:getHeader('Reply-To').match(/<?([^<>\s]+@[^<>\s]+)>?/)?.[1],partial});
     const isUnread=msg.labelIds?.includes('UNREAD') ?? false;
     const isUrgent=insights.categories.includes('Importante');
@@ -373,6 +378,27 @@ export class RealGmailProvider {
     });
   }
 
+  /** Gmail's historyId changes with every change in the mailbox; reading it costs 1 unit of quota. */
+  public async changeMarker(): Promise<string> {
+    if (!this.config?.sessionId) return '';
+    const token=await this.accessToken();
+    const res=await this.gmailRequest('https://gmail.googleapis.com/gmail/v1/users/me/profile',{headers:{Authorization:`Bearer ${token}`}});
+    if(!res.ok)return '';
+    const data=await res.json() as {historyId?:string;messagesTotal?:number};
+    return `${data.historyId ?? ''}:${data.messagesTotal ?? ''}`;
+  }
+
+  public async notSpamEmails(ids: string[]): Promise<void> {
+    this.forget(ids);
+    if (!this.config?.sessionId) throw new Error('Sesión no autorizada');
+    const token=await this.accessToken(),session=this.getSessionKey();
+    await this.eachMessage(ids, 'mover a la bandeja de entrada', async (id) => {
+      if(session!==this.getSessionKey())throw new Error('La sesión cambió. Se detuvo el resto de la operación.');
+      const res = await this.gmailRequest(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(id)}/modify`, {method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify({removeLabelIds:['SPAM'],addLabelIds:['INBOX']})});
+      if (!res.ok) throw new Error('Gmail no confirmó el cambio. Revisa la carpeta Spam antes de volver a intentarlo.');
+    });
+  }
+
   public async removeLabel(ids: string[], labelName: string): Promise<void> {
     this.forget(ids);
     if (!this.config?.sessionId) throw new Error('Sesión no autorizada');
@@ -390,7 +416,8 @@ export class RealGmailProvider {
   public async sendEmail(recipient: string, subject: string, body: string, attachments: MailFile[] = []): Promise<void> {
     if (!this.config?.sessionId) throw new Error('Sesión no autorizada');
     body = cleanMessageBody(body);
-    if (attachments.length) return this.sendWithAttachments(recipient, subject, body, attachments);
+    // Links with their own text need HTML: same MIME builder as attachments (plain text + HTML alternatives).
+    if (attachments.length || hasLinks(body)) return this.sendWithAttachments(recipient, subject, body, attachments);
 
     const token=await this.accessToken();
     if(!/^[^\s<>@,;\r\n]+@[^\s<>@,;\r\n]+\.[^\s<>@,;\r\n]+$/.test(recipient) || /[\r\n]/.test(subject)) throw new Error('Revisa el destinatario y el asunto.');
@@ -433,7 +460,12 @@ export class RealGmailProvider {
     const safeType=(type:string)=>/^[\w.+-]+\/[\w.+-]+$/.test(type)?type:'application/octet-stream';
     const parts=[
       `To: ${recipient}`,`Subject: ${encodeWord(subject)}`,'MIME-Version: 1.0',`Content-Type: multipart/mixed; boundary="${boundary}"`,'',
-      `--${boundary}`,'Content-Type: text/plain; charset=utf-8','Content-Transfer-Encoding: base64','',wrap(btoa(unescape(encodeURIComponent(body)))),
+      `--${boundary}`,...(hasLinks(body)
+        ? [`Content-Type: multipart/alternative; boundary="${boundary}-alt"`,'',
+          `--${boundary}-alt`,'Content-Type: text/plain; charset=utf-8','Content-Transfer-Encoding: base64','',wrap(btoa(unescape(encodeURIComponent(toPlainText(body))))),
+          `--${boundary}-alt`,'Content-Type: text/html; charset=utf-8','Content-Transfer-Encoding: base64','',wrap(btoa(unescape(encodeURIComponent(toHtml(body))))),
+          `--${boundary}-alt--`]
+        : ['Content-Type: text/plain; charset=utf-8','Content-Transfer-Encoding: base64','',wrap(btoa(unescape(encodeURIComponent(body))))]),
       ...attachments.flatMap(file=>{const name=file.name.replace(/[\r\n"\\]/g,'_');return [`--${boundary}`,`Content-Type: ${safeType(file.type)}; name="${encodeWord(name)}"`,`Content-Disposition: attachment; filename*=UTF-8''${encodeURIComponent(name)}`,'Content-Transfer-Encoding: base64','',wrap(file.data)];}),
       `--${boundary}--`,''
     ].join('\r\n');

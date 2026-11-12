@@ -1,5 +1,7 @@
 import { PublicClientApplication, BrowserCacheLocation, CacheLookupPolicy, LogLevel, EventType, type AccountInfo, type AuthenticationResult } from '@azure/msal-browser';
 import { analyzeMail, inspectHtml } from '@shared/mail/mail-insights';
+import { senderAuthentication } from '@shared/mail/sender-intel';
+import { hasLinks, toHtml } from './mailLinks';
 import type { Email, EmailCategory, MailAttachment, MailFile } from '../types/email';
 import { base64ToBlob } from './mailFiles';
 import { MANUAL_CATEGORIES } from '../types/email';
@@ -13,6 +15,8 @@ const READ_SCOPES = ['User.Read', 'Mail.Read'];
 const WRITE_SCOPES = ['Mail.ReadWrite'];
 const SEND_SCOPES = ['Mail.Send'];
 const SELECT = 'id,subject,from,receivedDateTime,isRead,bodyPreview,body,categories,parentFolderId,flag,isDraft,hasAttachments,toRecipients,replyTo,importance';
+/** Headers carry Outlook's SPF/DKIM/DMARC verdict (Authentication-Results). */
+const SELECT_WITH_HEADERS = SELECT + ',internetMessageHeaders';
 /** Gmail-style folder names used by the shared interface, mapped to Outlook's well-known folders. */
 const FOLDERS: Record<string, string> = { inbox: 'inbox', sent: 'sentitems', trash: 'deleteditems', drafts: 'drafts', spam: 'junkemail' };
 const CATEGORIES: EmailCategory[] = ['Trabajo', 'Finanzas', 'Urgente', 'Suscripciones', 'Personal', 'Notificaciones', 'Importante', 'Boletines'];
@@ -22,6 +26,7 @@ type GraphMessage = {
   id: string; subject?: string; from?: GraphAddress; receivedDateTime: string; isRead?: boolean; bodyPreview?: string;
   body?: { contentType: string; content: string }; categories?: string[]; parentFolderId?: string; flag?: { flagStatus?: string };
   hasAttachments?: boolean; toRecipients?: GraphAddress[]; replyTo?: GraphAddress[]; importance?: string;
+  internetMessageHeaders?: { name: string; value: string }[];
 };
 type Mode = 'read' | 'write' | 'send';
 
@@ -59,6 +64,8 @@ export class OutlookProvider {
   private client: PublicClientApplication | null = null;
   private account: AccountInfo | null = null;
   private flowPending = false;
+  /** Cleared if Graph refuses internetMessageHeaders in message lists. */
+  private withHeaders = true;
   /** Renewals run one after another, so parallel requests never open two Microsoft windows. */
   private renewals: Promise<unknown> = Promise.resolve();
   private folderIds: { key: string; ids: Record<string, string> } | null = null;
@@ -263,14 +270,22 @@ export class OutlookProvider {
     const rest = query.replace(/\bin:(\w+)/g, (_, name: string) => { found.folder = name; return ''; }).replace(/\bis:starred\b/g, () => { found.flagged = true; return ''; }).trim();
     const { folder, flagged } = found;
     const wellKnown = folder ? FOLDERS[folder] : undefined;
-    const params = new URLSearchParams({ $top: String(Math.min(Math.max(maxResults, 1), MAX_LOADED)), $select: SELECT });
+    const params = new URLSearchParams({ $top: String(Math.min(Math.max(maxResults, 1), MAX_LOADED)), $select: this.withHeaders ? SELECT_WITH_HEADERS : SELECT });
     const search = toKql(rest);
     if (search) params.set('$search', `"${search}"`);
     else if (flagged) params.set('$filter', "flag/flagStatus eq 'flagged'");
     else params.set('$orderby', 'receivedDateTime desc');
     const base = wellKnown ? `/me/mailFolders/${wellKnown}/messages` : '/me/messages';
     const ids = await this.knownFolders();
-    const data = await this.graph<{ value?: GraphMessage[] }>('GET', `${base}?${params.toString().replace(/\+/g, '%20')}`);
+    const url = () => `${base}?${params.toString().replace(/\+/g, '%20')}`;
+    let data: { value?: GraphMessage[] };
+    try { data = await this.graph<{ value?: GraphMessage[] }>('GET', url()); }
+    catch (error) {
+      // If a mailbox refuses headers in a list, keep working without the sender verification.
+      if (!this.withHeaders || !/internetMessageHeaders|\$select|select/i.test(error instanceof Error ? error.message : '')) throw error;
+      this.withHeaders = false; params.set('$select', SELECT);
+      data = await this.graph<{ value?: GraphMessage[] }>('GET', url());
+    }
     let messages = data.value || [];
     // Like Gmail, a search across all mail leaves out trash and spam.
     if (!wellKnown) messages = messages.filter(m => m.parentFolderId !== ids.trash && m.parentFolderId !== ids.spam);
@@ -286,11 +301,13 @@ export class OutlookProvider {
     const senderName = m.from?.emailAddress.name || sender;
     const categories = m.categories || [];
     const place = folder || Object.entries(ids).find(([, id]) => id === m.parentFolderId)?.[0] || '';
-    const insights = analyzeMail({ subject: m.subject || '', sender, senderName, text: plain || m.bodyPreview || '', html: html || undefined,
-      labels: categories, hasAttachments: m.hasAttachments, replyTo: m.replyTo?.[0]?.emailAddress.address, partial: !m.body?.content });
+    // Outlook writes its SPF/DKIM/DMARC verdict (and compauth) in the topmost Authentication-Results header.
+    const auth = senderAuthentication(m.internetMessageHeaders, sender);
+    const insights = analyzeMail({ subject: m.subject || '', sender, senderName, auth, text: plain || m.bodyPreview || '', html: html || undefined,
+      labels: place === 'spam' ? [...categories, 'SPAM'] : categories, hasAttachments: m.hasAttachments, replyTo: m.replyTo?.[0]?.emailAddress.address, partial: !m.body?.content });
     const flaggedMessage = m.flag?.flagStatus === 'flagged';
     // Gmail-style system labels, so the shared agent can tell sent, unread and starred mail apart.
-    const system = [place === 'sent' ? 'SENT' : place === 'inbox' ? 'INBOX' : place === 'trash' ? 'TRASH' : '', m.isRead ? '' : 'UNREAD', flaggedMessage ? 'STARRED' : ''].filter(Boolean);
+    const system = [place === 'sent' ? 'SENT' : place === 'inbox' ? 'INBOX' : place === 'trash' ? 'TRASH' : place === 'spam' ? 'SPAM' : '', m.isRead ? '' : 'UNREAD', flaggedMessage ? 'STARRED' : ''].filter(Boolean);
     return {
       id: m.id, sender, senderName,
       recipient: (m.toRecipients || []).map(r => r.emailAddress.address).filter(Boolean).join(', ') || 'me',
@@ -319,6 +336,16 @@ export class OutlookProvider {
   }
   trashEmails(ids: string[]): Promise<void> { return this.move(ids, 'deleteditems', 'Outlook no confirmó el movimiento a Elementos eliminados. Revisa el buzón antes de crear otra propuesta.'); }
   untrashEmails(ids: string[]): Promise<void> { return this.move(ids, 'inbox', 'Outlook no confirmó la recuperación. Revisa Elementos eliminados antes de volver a intentarlo.'); }
+  /** Newest message in the inbox and the unread count: one small request. */
+  async changeMarker(): Promise<string> {
+    if (!this.account) return '';
+    const [latest, folder] = await Promise.all([
+      this.graph<{ value?: { id: string }[] }>('GET', "/me/mailFolders/inbox/messages?$top=1&$select=id&$orderby=receivedDateTime%20desc", undefined, 'read', false),
+      this.graph<{ totalItemCount?: number; unreadItemCount?: number }>('GET', '/me/mailFolders/inbox?$select=totalItemCount,unreadItemCount', undefined, 'read', false),
+    ]);
+    return `${latest.value?.[0]?.id ?? ''}:${folder.totalItemCount ?? ''}:${folder.unreadItemCount ?? ''}`;
+  }
+  notSpamEmails(ids: string[]): Promise<void> { return this.move(ids, 'inbox', 'Outlook no confirmó el cambio. Revisa Correo no deseado antes de volver a intentarlo.'); }
 
   /** Categories are read right before the change, so other categories are never overwritten with an old copy. */
   private async updateCategories(ids: string[], change: (current: string[]) => string[]): Promise<void> {
@@ -359,7 +386,8 @@ export class OutlookProvider {
     if (!addresses.length || addresses.some(a => !/^[^\s<>@,;]+@[^\s<>@,;]+\.[^\s<>@,;]+$/.test(a)) || /[\r\n]/.test(subject)) throw new Error('Revisa el destinatario y el asunto.');
     if (attachments.reduce((sum, file) => sum + file.size, 0) > MAX_ATTACHMENT_BYTES) throw new Error(`Los adjuntos superan el límite de ${MAX_ATTACHMENT_LABEL} por mensaje.`);
     const message = {
-      subject: subject || '(Sin asunto)', body: { contentType: 'Text', content: cleanMessageBody(body) },
+      // Links with their own text are sent as HTML; everything else stays plain text.
+      subject: subject || '(Sin asunto)', body: hasLinks(cleanMessageBody(body)) ? { contentType: 'HTML', content: toHtml(cleanMessageBody(body)) } : { contentType: 'Text', content: cleanMessageBody(body) },
       toRecipients: addresses.map(address => ({ emailAddress: { address } })),
       attachments: attachments.map(file => ({ '@odata.type': '#microsoft.graph.fileAttachment', name: file.name, contentType: file.type || 'application/octet-stream', contentBytes: file.data })),
     };

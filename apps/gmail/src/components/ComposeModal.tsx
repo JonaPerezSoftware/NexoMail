@@ -4,6 +4,7 @@ import type { MailFile } from '../types/email';
 import { MAX_ATTACHMENT_BYTES } from '../services/mailProvider';
 import { MAX_ATTACHMENT_LABEL } from '../services/platform';
 import { formatSize, readMailFile } from '../services/mailFiles';
+import { BodyEditor } from './BodyEditor';
 
 export interface ComposeValue { to: string; subject: string; body: string; files: MailFile[]; draftId?: string }
 
@@ -63,7 +64,7 @@ export function ComposeModal({ value, onClose, onSubmit, onSaveDraft }: Props) {
           <label htmlFor="cm-subject">Asunto</label>
           <input id="cm-subject" type="text" value={draft.subject} onChange={e => set({ subject: e.target.value })} />
           <label htmlFor="cm-body">Mensaje</label>
-          <textarea id="cm-body" rows={10} value={draft.body} onChange={e => set({ body: e.target.value })} />
+          <BodyEditor id="cm-body" rows={10} value={draft.body} onChange={body => set({ body })} />
         </div>
         {draft.files.length > 0 && (
           <ul className="pa-files" aria-label="Adjuntos">

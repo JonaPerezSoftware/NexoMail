@@ -4,6 +4,22 @@ import { Check, X, Mail, Trash2, Tag, Info, PenLine, ShieldCheck, Undo2, Papercl
 import type { ActionType, MailFile, PendingAction } from '../types/email';
 import { MAIL, PLATFORM, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_LABEL } from '../services/platform';
 
+import type { ReactNode } from 'react';
+import { BodyEditor, LinkSummary } from './BodyEditor';
+import { linksIn } from '../services/mailLinks';
+
+/** The message as it will be read: each [text](address) shown as its text, underlined, with the address on hover. */
+function bodyWithLinks(body: string) {
+  const out: ReactNode[] = [];
+  let last = 0, n = 0;
+  for (const m of body.matchAll(/\[([^\]\n]{1,300})\]\((https?:\/\/[^\s)]{1,2000})\)/g)) {
+    const start = m.index ?? 0;
+    out.push(body.slice(last, start), <span key={n++} className="pa-link" title={m[2]}>{m[1]}</span>);
+    last = start + m[0].length;
+  }
+  out.push(body.slice(last));
+  return linksIn(body).length ? out : body;
+}
 import { formatSize, readMailFile } from '../services/mailFiles';
 
 interface PendingActionsListProps {
@@ -169,12 +185,7 @@ export const PendingActionsList: React.FC<PendingActionsListProps> = ({
                   onChange={e => setEditForm(prev => ({ ...prev, subject: e.target.value }))}
                 />
                 <label htmlFor={fieldId('body')}>Mensaje</label>
-                <textarea
-                  id={fieldId('body')}
-                  rows={8}
-                  value={editForm.body}
-                  onChange={e => setEditForm(prev => ({ ...prev, body: e.target.value }))}
-                />
+                <BodyEditor id={fieldId('body')} rows={8} value={editForm.body} onChange={body => setEditForm(prev => ({ ...prev, body }))} />
                 {editForm.files.length > 0 && (
                   <ul className="pa-files pa-files-edit" aria-label="Adjuntos">
                     {editForm.files.map((file, index) => (
@@ -229,7 +240,10 @@ export const PendingActionsList: React.FC<PendingActionsListProps> = ({
                   </fieldset>
                 )}
                 {isSend && action.payload.body && (
-                  <div className="pa-message">{action.payload.body}</div>
+                  <>
+                    <div className="pa-message">{bodyWithLinks(action.payload.body)}</div>
+                    <LinkSummary body={action.payload.body} />
+                  </>
                 )}
                 {isSend && !!action.payload.attachments?.length && (
                   <ul className="pa-files" aria-label="Adjuntos">
