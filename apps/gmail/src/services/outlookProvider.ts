@@ -1,7 +1,10 @@
+import { messageStamp } from './dates';
 import { PublicClientApplication, BrowserCacheLocation, CacheLookupPolicy, LogLevel, EventType, type AccountInfo, type AuthenticationResult } from '@azure/msal-browser';
-import { analyzeMail, inspectHtml } from '@shared/mail/mail-insights';
+import { analyzeMail, inspectHtml, ownMessageInsights } from '@shared/mail/mail-insights';
 import { senderAuthentication } from '@shared/mail/sender-intel';
 import { hasLinks, toHtml } from './mailLinks';
+import { toEmailHtml } from './richText';
+import type { OutgoingExtra } from './mailProvider';
 import type { Email, EmailCategory, MailAttachment, MailFile } from '../types/email';
 import { base64ToBlob } from './mailFiles';
 import { MANUAL_CATEGORIES } from '../types/email';
@@ -14,7 +17,7 @@ const GRAPH = 'https://graph.microsoft.com/v1.0';
 const READ_SCOPES = ['User.Read', 'Mail.Read'];
 const WRITE_SCOPES = ['Mail.ReadWrite'];
 const SEND_SCOPES = ['Mail.Send'];
-const SELECT = 'id,subject,from,receivedDateTime,isRead,bodyPreview,body,categories,parentFolderId,flag,isDraft,hasAttachments,toRecipients,replyTo,importance';
+const SELECT = 'id,subject,from,receivedDateTime,isRead,bodyPreview,body,categories,parentFolderId,flag,isDraft,hasAttachments,toRecipients,replyTo,importance,webLink';
 /** Headers carry Outlook's SPF/DKIM/DMARC verdict (Authentication-Results). */
 const SELECT_WITH_HEADERS = SELECT + ',internetMessageHeaders';
 /** Gmail-style folder names used by the shared interface, mapped to Outlook's well-known folders. */
@@ -25,7 +28,7 @@ type GraphAddress = { emailAddress: { name?: string; address?: string } };
 type GraphMessage = {
   id: string; subject?: string; from?: GraphAddress; receivedDateTime: string; isRead?: boolean; bodyPreview?: string;
   body?: { contentType: string; content: string }; categories?: string[]; parentFolderId?: string; flag?: { flagStatus?: string };
-  hasAttachments?: boolean; toRecipients?: GraphAddress[]; replyTo?: GraphAddress[]; importance?: string;
+  hasAttachments?: boolean; toRecipients?: GraphAddress[]; replyTo?: GraphAddress[]; importance?: string; webLink?: string;
   internetMessageHeaders?: { name: string; value: string }[];
 };
 type Mode = 'read' | 'write' | 'send';
@@ -305,18 +308,21 @@ export class OutlookProvider {
     const auth = senderAuthentication(m.internetMessageHeaders, sender);
     const insights = analyzeMail({ subject: m.subject || '', sender, senderName, auth, text: plain || m.bodyPreview || '', html: html || undefined,
       labels: place === 'spam' ? [...categories, 'SPAM'] : categories, hasAttachments: m.hasAttachments, replyTo: m.replyTo?.[0]?.emailAddress.address, partial: !m.body?.content });
+    // What this account really sent (it is in Sent Items) is not checked as possible fraud. The From address alone is
+    // not enough: some scams forge your own address as the sender.
+    const own = place === 'sent';
     const flaggedMessage = m.flag?.flagStatus === 'flagged';
     // Gmail-style system labels, so the shared agent can tell sent, unread and starred mail apart.
     const system = [place === 'sent' ? 'SENT' : place === 'inbox' ? 'INBOX' : place === 'trash' ? 'TRASH' : place === 'spam' ? 'SPAM' : '', m.isRead ? '' : 'UNREAD', flaggedMessage ? 'STARRED' : ''].filter(Boolean);
     return {
-      id: m.id, sender, senderName,
+      id: m.id, sender, senderName, webLink: m.webLink || undefined,
       recipient: (m.toRecipients || []).map(r => r.emailAddress.address).filter(Boolean).join(', ') || 'me',
       subject: m.subject || '(Sin asunto)', snippet: m.bodyPreview || '', body, bodyHtml: html || undefined,
-      date: new Date(m.receivedDateTime).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
+      date: messageStamp(new Date(Date.parse(m.receivedDateTime) || Date.now())),
       timestamp: Date.parse(m.receivedDateTime) || Date.now(),
       read: !!m.isRead,
       category: (CATEGORIES.find(c => categories.includes(c)) || 'Sin clasificar'),
-      insights,
+      insights: own ? ownMessageInsights(insights) : insights,
       priority: m.importance === 'high' || insights.categories.includes('Importante') ? 'urgent' : 'normal',
       labels: [...system, ...categories],
       starred: flaggedMessage,
@@ -335,6 +341,7 @@ export class OutlookProvider {
     }
   }
   trashEmails(ids: string[]): Promise<void> { return this.move(ids, 'deleteditems', 'Outlook no confirmó el movimiento a Elementos eliminados. Revisa el buzón antes de crear otra propuesta.'); }
+  markSpamEmails(ids: string[]): Promise<void> { return this.move(ids, 'junkemail', 'Outlook no confirmó el movimiento a Correo no deseado.'); }
   untrashEmails(ids: string[]): Promise<void> { return this.move(ids, 'inbox', 'Outlook no confirmó la recuperación. Revisa Elementos eliminados antes de volver a intentarlo.'); }
   /** Newest message in the inbox and the unread count: one small request. */
   async changeMarker(): Promise<string> {
@@ -360,10 +367,18 @@ export class OutlookProvider {
 
   /** Listed only when a message with attachments is opened; contents are not included. */
   async listAttachments(email: Email): Promise<MailAttachment[]> {
-    if (!email.hasAttachments) return [];
-    const data = await this.graph<{ value?: { id: string; name?: string; contentType?: string; size?: number; '@odata.type'?: string }[] }>('GET', `/me/messages/${encodeURIComponent(email.id)}/attachments?$select=id,name,contentType,size`);
+    // Outlook says «no attachments» for a message whose only files are images inside the text, so cid: also asks.
+    if (!email.hasAttachments && !/\bcid:/i.test(email.bodyHtml || '')) return [];
+    const data = await this.graph<{ value?: { id: string; name?: string; contentType?: string; size?: number; isInline?: boolean; contentId?: string; '@odata.type'?: string }[] }>('GET', `/me/messages/${encodeURIComponent(email.id)}/attachments?$select=id,name,contentType,size,isInline`);
     return (data.value || []).map(item => ({ id: item.id, name: item.name || 'adjunto', type: item.contentType || 'application/octet-stream', size: item.size || 0,
-      unsupported: item['@odata.type'] !== undefined && item['@odata.type'] !== '#microsoft.graph.fileAttachment' }));
+      unsupported: item['@odata.type'] !== undefined && item['@odata.type'] !== '#microsoft.graph.fileAttachment',
+      ...(item.isInline ? { cid: item.contentId || `outlook-inline:${item.id}` } : {}) }));
+  }
+
+  /** contentId of an inline image is only returned with the whole attachment: asked once per image, when it is shown. */
+  async inlineContentId(email: Email, attachment: MailAttachment): Promise<string> {
+    const data = await this.graph<{ contentId?: string }>('GET', `/me/messages/${encodeURIComponent(email.id)}/attachments/${encodeURIComponent(attachment.id)}?$select=id,contentId`);
+    return (data.contentId || '').replace(/^<|>$/g, '');
   }
 
   async downloadAttachment(email: Email, attachment: MailAttachment): Promise<Blob> {
@@ -380,16 +395,24 @@ export class OutlookProvider {
     catch (error) { if ((error as Error).message !== 'Microsoft requiere autorización.') throw error; }
   }
 
-  async sendEmail(recipient: string, subject: string, body: string, attachments: MailFile[] = []): Promise<void> {
+  async sendEmail(recipient: string, subject: string, body: string, attachments: MailFile[] = [], extra: OutgoingExtra = {}): Promise<void> {
     if (!this.account) throw new Error('Sesión no autorizada');
-    const addresses = recipient.split(/[;,]/).map(value => value.trim()).filter(Boolean);
-    if (!addresses.length || addresses.some(a => !/^[^\s<>@,;]+@[^\s<>@,;]+\.[^\s<>@,;]+$/.test(a)) || /[\r\n]/.test(subject)) throw new Error('Revisa el destinatario y el asunto.');
+    const list = (value?: string) => (value ?? '').split(/[;,]/).map(part => part.trim()).filter(Boolean);
+    const valid = (address: string) => /^[^\s<>@,;"]+@[^\s<>@,;"]+\.[^\s<>@,;"]+$/.test(address);
+    const to = list(recipient), cc = list(extra.cc), bcc = list(extra.bcc);
+    if (!to.length || [...to, ...cc, ...bcc].some(a => !valid(a)) || /[\r\n]/.test(subject)) throw new Error('Revisa los destinatarios y el asunto.');
     if (attachments.reduce((sum, file) => sum + file.size, 0) > MAX_ATTACHMENT_BYTES) throw new Error(`Los adjuntos superan el límite de ${MAX_ATTACHMENT_LABEL} por mensaje.`);
+    const text = cleanMessageBody(body);
+    const recipients = (addresses: string[]) => addresses.map(address => ({ emailAddress: { address } }));
     const message = {
-      // Links with their own text are sent as HTML; everything else stays plain text.
-      subject: subject || '(Sin asunto)', body: hasLinks(cleanMessageBody(body)) ? { contentType: 'HTML', content: toHtml(cleanMessageBody(body)) } : { contentType: 'Text', content: cleanMessageBody(body) },
-      toRecipients: addresses.map(address => ({ emailAddress: { address } })),
-      attachments: attachments.map(file => ({ '@odata.type': '#microsoft.graph.fileAttachment', name: file.name, contentType: file.type || 'application/octet-stream', contentBytes: file.data })),
+      // Formatted messages and links with their own text are sent as HTML; everything else stays plain text.
+      subject: subject || '(Sin asunto)',
+      body: extra.html ? { contentType: 'HTML', content: toEmailHtml(extra.html) } : hasLinks(text) ? { contentType: 'HTML', content: toHtml(text) } : { contentType: 'Text', content: text },
+      toRecipients: recipients(to),
+      ...(cc.length ? { ccRecipients: recipients(cc) } : {}),
+      ...(bcc.length ? { bccRecipients: recipients(bcc) } : {}),
+      // Images inside the text go as inline attachments; the HTML points to them by their content id.
+      attachments: attachments.map(file => ({ '@odata.type': '#microsoft.graph.fileAttachment', name: file.name, contentType: file.type || 'application/octet-stream', contentBytes: file.data, ...(file.inline && file.cid ? { isInline: true, contentId: file.cid } : {}) })),
     };
     await this.graph('POST', '/me/sendMail', { message, saveToSentItems: true }, 'send');
   }

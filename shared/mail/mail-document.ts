@@ -1,5 +1,9 @@
 /** Build an isolated, passive email document. Never insert sender HTML into the app DOM. */
-export function mailDocument(html:string,images=false):{document:string;links:{href:string;text:string}[]}{
+/**
+ * @param inline images that travel inside the message itself (cid:), already downloaded as data: URLs. They are part
+ * of the mail, not loaded from the internet, so they show without «Mostrar imágenes» (which is only for external ones).
+ */
+export function mailDocument(html:string,images=false,inline:Record<string,string>={}):{document:string;links:{href:string;text:string}[]}{
   const template=document.createElement('template');template.innerHTML=html.slice(0,500000);
   const allowed=new Set('div span p br hr table thead tbody tfoot tr td th col colgroup img a b strong i em u s small big sub sup h1 h2 h3 h4 h5 h6 ul ol li blockquote pre code center font style'.split(' '));
   const attrs=new Set('style class id title alt width height align valign bgcolor color size face border cellpadding cellspacing colspan rowspan dir lang'.split(' '));
@@ -12,6 +16,8 @@ export function mailDocument(html:string,images=false):{document:string;links:{h
     const tag=element.tagName.toLowerCase();
     if(!allowed.has(tag)){element.remove();continue;}
     const image=tag==='img'?url(element.getAttribute('src')):'';
+    // Read before the attributes are cleaned (src is not kept as such).
+    const cid=tag==='img'?(element.getAttribute('src') || '').match(/^cid:(.+)$/i)?.[1]:undefined;
     const href=tag==='a'?url(element.getAttribute('href')):'';
     if(href && !links.some(link=>link.href===href))links.push({href,text:(element.textContent || '').trim().slice(0,200)});
     if(tag==='style')element.textContent=css(element.textContent || '');
@@ -22,10 +28,13 @@ export function mailDocument(html:string,images=false):{document:string;links:{h
     if(tag==='a' && href)element.setAttribute('title','Este enlace no se abre desde aquí. Ábrelo en «Enlaces del mensaje», debajo del correo, donde NexoMail lo revisa antes.\nDestino: '+href);
     if(tag==='img'){
       const tiny=['width','height'].some(name=>{const value=Number(element.getAttribute(name));return element.hasAttribute(name) && value>=0 && value<=2;});
+      let own=cid?inline[cid] || '':'';
+      if(cid && !own){try{own=inline[decodeURIComponent(cid)] || '';}catch{/* malformed: no image */}}
+      if(own && /^data:image\/(?:png|jpe?g|gif|webp);base64,[a-z0-9+/=]+$/i.test(own)){element.setAttribute('src',own);continue;}
       if(!images || tiny || !image.startsWith('https:')){element.remove();continue;}
       element.setAttribute('src',image);element.setAttribute('referrerpolicy','no-referrer');element.setAttribute('loading','lazy');
     }
   }
-  const policy="default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src "+(images?'https:':"'none'")+"; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'";
+  const policy="default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data:"+(images?' https:':'')+"; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'";
   return {document:'<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="'+policy+'"><meta name="referrer" content="no-referrer"><style>html,body{margin:0;padding:0;background:#fff;color:#202124;font:14px/1.6 Arial,sans-serif;overflow-wrap:anywhere}body{padding:16px;box-sizing:border-box}img{max-width:100%!important;height:auto!important}table{max-width:100%!important}pre{white-space:pre-wrap}a{color:#1769aa;text-decoration:underline dotted;cursor:help}*{box-sizing:border-box}</style></head><body>'+template.innerHTML+'</body></html>',links:links.slice(0,100)};
 }

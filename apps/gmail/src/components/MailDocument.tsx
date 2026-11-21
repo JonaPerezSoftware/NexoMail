@@ -1,3 +1,4 @@
+import { askConfirm, notify } from './ConfirmDialog';
 import {useEffect,useMemo,useRef,useState} from 'react';
 import {AlertTriangle,ExternalLink,Link2,ShieldAlert,X} from 'lucide-react';
 import {mailDocument} from '@shared/mail/mail-document';
@@ -6,9 +7,10 @@ import {checkLink} from '@shared/mail/mail-insights';
 /** Web addresses written as plain text, for messages without HTML. */
 const TEXT_LINK=/(?:https?:\/\/|www\.)[^\s<>"']+/gi;
 
-export function MailDocument({html,text,senderDomain,verified,knownSender}:{html?:string;text:string;senderDomain?:string;verified?:boolean;knownSender?:boolean}){
+/** @param inline images that are part of the message (cid:), as data: URLs; shown without asking, unlike external ones. */
+export function MailDocument({html,text,senderDomain,verified,knownSender,inline}:{html?:string;text:string;senderDomain?:string;verified?:boolean;knownSender?:boolean;inline?:Record<string,string>}){
   const [images,setImages]=useState(false),[plain,setPlain]=useState(false);
-  const content=useMemo(()=>mailDocument(html || '',images),[html,images]);
+  const content=useMemo(()=>mailDocument(html || '',images,inline),[html,images,inline]);
   // Every link is checked on this device before it is offered: where it really goes and whether it tries to deceive.
   const links=useMemo(()=>{
     const found=html?content.links:[...new Set((text.match(TEXT_LINK) ?? []).map(link=>link.replace(/[.,;)\]}]+$/,'')))].slice(0,100).map(href=>({href,text:''}));
@@ -41,15 +43,15 @@ export function MailDocument({html,text,senderDomain,verified,knownSender}:{html
     requestAnimationFrame(()=>{list.current?.scrollIntoView({behavior:'smooth',block:'start'});list.current?.querySelector('summary')?.focus({preventScroll:true});});
   }
 
-  function open(link:typeof links[number]){
+  async function open(link:typeof links[number]){
     const {check}=link;
-    if(!check.url || check.blocked){window.alert('Este enlace no se puede abrir de forma segura.\n\n'+link.href);return;}
+    if(!check.url || check.blocked){await notify('Este enlace no se puede abrir de forma segura\n\n'+link.href);return;}
     const destination=check.url.href;
     const warnings=check.findings.filter(f=>f.weight>0);
-    const message=warnings.length
-      ? `${check.danger?'⚠️ ESTE ENLACE PARECE ENGAÑOSO':'Revisa este enlace antes de abrirlo'}\n\n${warnings.map(f=>'• '+f.reason).join('\n')}\n\nVa a: ${check.domain}\n${destination}\n\n${check.danger?'¿Seguro que quieres abrirlo? Si no esperabas este correo, no lo abras.':'¿Abrirlo en una pestaña nueva?'}`
-      : `Vas a abrir un sitio externo:\n\n${check.domain}\n${destination}\n\nNexoMail revisó la dirección y no encontró señales de engaño, pero no puede garantizar que el sitio sea seguro. ¿Abrirlo en una pestaña nueva?`;
-    if(window.confirm(message))window.open(destination,'_blank','noopener,noreferrer');
+    const ok=await askConfirm(warnings.length
+      ? {title:check.danger?'Este enlace parece engañoso':'Revisa este enlace antes de abrirlo',items:warnings.map(f=>f.reason),message:`Va a: ${check.domain}\n\n${destination}\n\n${check.danger?'Si no esperabas este correo, no lo abras.':'Se abrirá en una pestaña nueva.'}`,confirmLabel:'Abrir de todos modos',danger:check.danger}
+      : {title:'Vas a abrir un sitio externo',message:`${check.domain}\n\n${destination}\n\nNexoMail revisó la dirección y no encontró señales de engaño, pero no puede garantizar que el sitio sea seguro.`,confirmLabel:'Abrir en una pestaña nueva'});
+    if(ok)window.open(destination,'_blank','noopener,noreferrer');
   }
 
   const linkCount=links.length===1?'1 enlace':`${links.length} enlaces`;

@@ -14,6 +14,8 @@ export interface MailAttachment {
   data?: string;
   /** Outlook items such as an attached email or event, which cannot be downloaded as a file. */
   unsupported?: boolean;
+  /** An image shown inside the text (the HTML points to it with cid:), not a file to download. */
+  cid?: string;
 }
 
 export interface Email {
@@ -22,6 +24,10 @@ export interface Email {
   sender: string;
   senderName: string;
   senderAvatar?: string;
+  /** Gmail conversation id, to open the message in Gmail itself. */
+  threadId?: string;
+  /** Outlook's own address of the message (Graph «webLink»), to open it in Outlook on the web. */
+  webLink?: string;
   recipient: string;
   subject: string;
   snippet: string;
@@ -66,6 +72,9 @@ export interface MailFile {
   data: string;
   /** Size before a large photo was reduced; absent when the file is sent as is. */
   originalSize?: number;
+  /** An image shown inside the text of a formatted message (not listed as an attachment); the HTML points to it with cid:. */
+  inline?: boolean;
+  cid?: string;
 }
 
 /** Categories a person can assign by hand; stored as Gmail labels with the same name. */
@@ -77,6 +86,11 @@ export interface ActionPayload {
   /** Every message the proposal found; emailIds is the subset the person keeps selected. */
   emailOptions?: { id: string; sender: string; subject: string; date: string }[];
   recipient?: string;
+  /** Copy and blind copy, comma-separated, as in Gmail. */
+  cc?: string;
+  bcc?: string;
+  /** Formatted version written in the editor (sanitized HTML). body stays as its plain-text copy. */
+  bodyHtml?: string;
   subject?: string;
   body?: string;
   label?: string;
@@ -85,6 +99,8 @@ export interface ActionPayload {
   isReal?: boolean;
   sessionKey?: string;
   attachments?: MailFile[];
+  /** Sender of the message being answered, to warn when the reply would go to another organization. */
+  replyToSender?: string;
   /** Names of files that were attached before a reload; their contents are not kept. */
   omittedAttachments?: string[];
 }

@@ -1,12 +1,23 @@
+import { askConfirm } from './ConfirmDialog';
 import { MANUAL_BODY_PLACEHOLDER } from '../services/mailIntent';
 import React, { useRef, useState } from 'react';
-import { Check, X, Mail, Trash2, Tag, Info, PenLine, ShieldCheck, Undo2, Paperclip, MessageSquare, FileText, Image as ImageIcon, Loader2, History } from 'lucide-react';
+import { Check, X, Mail, Trash2, Tag, Info, PenLine, ShieldCheck, Undo2, Paperclip, MessageSquare, FileText, Image as ImageIcon, Loader2, History, AlertTriangle } from 'lucide-react';
 import type { ActionType, MailFile, PendingAction } from '../types/email';
 import { MAIL, PLATFORM, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_LABEL } from '../services/platform';
 
 import type { ReactNode } from 'react';
-import { BodyEditor, LinkSummary } from './BodyEditor';
+import { LinkSummary } from './BodyEditor';
+import { RichEditor } from './RichEditor';
+import { RecipientField } from './RecipientField';
+import { extractInlineImages, hasFormatting, htmlToText, linksInHtml, resolveInlineImages, sanitizeHtml, textToHtml } from '../services/richText';
 import { linksIn } from '../services/mailLinks';
+import { sensitiveData, replyWarning, type OutgoingWarning } from '../services/outgoingChecks';
+
+/** What a send would expose: sensitive data in the text, or a reply that goes to another organization. */
+const outgoingWarnings = (action: PendingAction): OutgoingWarning[] => action.actionType !== 'SEND_EMAIL' ? [] : [
+  ...sensitiveData(action.payload.body ?? ''),
+  ...[replyWarning(action.payload.recipient ?? '', action.payload.replyToSender ? { sender: action.payload.replyToSender } : null)].filter((w): w is OutgoingWarning => !!w),
+];
 
 /** The message as it will be read: each [text](address) shown as its text, underlined, with the address on hover. */
 function bodyWithLinks(body: string) {
@@ -49,10 +60,13 @@ export const PendingActionsList: React.FC<PendingActionsListProps> = ({
   onChange
 }) => {
   const [editingActionId, setEditingActionId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState<{ recipient: string; subject: string; body: string; files: MailFile[] }>({
+  const [editForm, setEditForm] = useState<{ recipient: string; cc: string; bcc: string; subject: string; body: string; html: string; files: MailFile[] }>({
     recipient: '',
+    cc: '',
+    bcc: '',
     subject: '',
     body: '',
+    html: '',
     files: []
   });
   const [fileError, setFileError] = useState('');
@@ -63,6 +77,9 @@ export const PendingActionsList: React.FC<PendingActionsListProps> = ({
   const [working, setWorking] = useState<string | null>(null);
   const approve = async (action: PendingAction) => {
     if (working) return;
+    // It only warns: the person decides, but never without having read what would go out.
+    const warnings = outgoingWarnings(action);
+    if (warnings.length && !(await askConfirm({ title: 'Antes de enviar, revisa', items: warnings.map(w => w.text), message: 'Cualquiera que reciba o reenvíe este correo podrá ver estos datos.', confirmLabel: 'Enviar de todos modos', cancelLabel: 'Volver a revisar', danger: true }))) return;
     setWorking(action.id);
     try { await onApprove(action); } finally { setWorking(null); }
   };
@@ -103,20 +120,31 @@ export const PendingActionsList: React.FC<PendingActionsListProps> = ({
 
   const handleStartEdit = (action: PendingAction) => {
     setEditingActionId(action.id);
+    // The same editor as «Nuevo correo»: a message written by the AI (plain text) opens as editable formatted text.
     setEditForm({
       recipient: action.payload.recipient || '',
+      cc: action.payload.cc || '',
+      bcc: action.payload.bcc || '',
       subject: action.payload.subject || '',
       body: action.payload.body || '',
-      files: [...(action.payload.attachments ?? [])]
+      html: action.payload.bodyHtml ? resolveInlineImages(action.payload.bodyHtml, action.payload.attachments) : textToHtml(action.payload.body || ''),
+      files: (action.payload.attachments ?? []).filter(file => !file.inline)
     });
     setFileError('');
   };
 
   const handleSaveEdit = (action: PendingAction) => {
-    action.payload.recipient = editForm.recipient;
+    const clean = sanitizeHtml(editForm.html);
+    const rich = hasFormatting(clean);
+    const { html, images } = extractInlineImages(clean);
+    action.payload.recipient = editForm.recipient.trim().replace(/[,;\s]+$/, '');
+    action.payload.cc = editForm.cc.trim().replace(/[,;\s]+$/, '') || undefined;
+    action.payload.bcc = editForm.bcc.trim().replace(/[,;\s]+$/, '') || undefined;
     action.payload.subject = editForm.subject;
-    action.payload.body = editForm.body;
-    action.payload.attachments = editForm.files.length ? editForm.files : undefined;
+    action.payload.body = htmlToText(clean);
+    action.payload.bodyHtml = rich ? html : undefined;
+    const files = [...editForm.files, ...(rich ? images : [])];
+    action.payload.attachments = files.length ? files : undefined;
     action.title = `Enviar correo a ${editForm.recipient || 'Destinatario'}`;
     action.description = `Asunto: "${editForm.subject}"`;
     action.payload.omittedAttachments = undefined;
@@ -170,13 +198,9 @@ export const PendingActionsList: React.FC<PendingActionsListProps> = ({
 
             {isEditing ? (
               <div className="pa-form">
-                <label htmlFor={fieldId('to')}>Para</label>
-                <input
-                  id={fieldId('to')}
-                  type="email"
-                  value={editForm.recipient}
-                  onChange={e => setEditForm(prev => ({ ...prev, recipient: e.target.value }))}
-                />
+                <RecipientField id={fieldId('to')} label="Para" value={editForm.recipient} onChange={recipient => setEditForm(prev => ({ ...prev, recipient }))} />
+                <RecipientField id={fieldId('cc')} label="Cc" value={editForm.cc} onChange={cc => setEditForm(prev => ({ ...prev, cc }))} />
+                <RecipientField id={fieldId('bcc')} label="Cco" value={editForm.bcc} onChange={bcc => setEditForm(prev => ({ ...prev, bcc }))} />
                 <label htmlFor={fieldId('subject')}>Asunto</label>
                 <input
                   id={fieldId('subject')}
@@ -184,8 +208,7 @@ export const PendingActionsList: React.FC<PendingActionsListProps> = ({
                   value={editForm.subject}
                   onChange={e => setEditForm(prev => ({ ...prev, subject: e.target.value }))}
                 />
-                <label htmlFor={fieldId('body')}>Mensaje</label>
-                <BodyEditor id={fieldId('body')} rows={8} value={editForm.body} onChange={body => setEditForm(prev => ({ ...prev, body }))} />
+                <RichEditor id={fieldId('body')} value={editForm.html} onChange={html => setEditForm(prev => ({ ...prev, html }))} minHeight={180} />
                 {editForm.files.length > 0 && (
                   <ul className="pa-files pa-files-edit" aria-label="Adjuntos">
                     {editForm.files.map((file, index) => (
@@ -202,6 +225,12 @@ export const PendingActionsList: React.FC<PendingActionsListProps> = ({
             ) : (
               <>
                 <dl className="pa-fields">
+                  {isSend && action.payload.cc && (
+                    <div><dt>Cc</dt><dd>{action.payload.cc}</dd></div>
+                  )}
+                  {isSend && action.payload.bcc && (
+                    <div><dt>Cco</dt><dd>{action.payload.bcc}</dd></div>
+                  )}
                   {isSend && action.payload.subject && (
                     <div><dt>Asunto</dt><dd>{action.payload.subject}</dd></div>
                   )}
@@ -241,13 +270,21 @@ export const PendingActionsList: React.FC<PendingActionsListProps> = ({
                 )}
                 {isSend && action.payload.body && (
                   <>
-                    <div className="pa-message">{bodyWithLinks(action.payload.body)}</div>
-                    <LinkSummary body={action.payload.body} />
+                    {action.payload.bodyHtml
+                      // Sanitized again on display: only formatting reaches the page.
+                      ? <div className="pa-message pa-rich" dangerouslySetInnerHTML={{ __html: sanitizeHtml(resolveInlineImages(action.payload.bodyHtml, action.payload.attachments)) }} />
+                      : <div className="pa-message">{bodyWithLinks(action.payload.body)}</div>}
+                    {action.payload.bodyHtml ? <LinkSummary links={linksInHtml(action.payload.bodyHtml)} /> : <LinkSummary body={action.payload.body} />}
+                    {outgoingWarnings(action).length > 0 && (
+                      <ul className="pa-outgoing" aria-label="Avisos antes de enviar">
+                        {outgoingWarnings(action).map(w => <li key={w.text}><AlertTriangle aria-hidden="true" />{w.text}</li>)}
+                      </ul>
+                    )}
                   </>
                 )}
-                {isSend && !!action.payload.attachments?.length && (
+                {isSend && !!action.payload.attachments?.some(file => !file.inline) && (
                   <ul className="pa-files" aria-label="Adjuntos">
-                    {action.payload.attachments.map((file, index) => (
+                    {action.payload.attachments.filter(file => !file.inline).map((file, index) => (
                       <li key={index}><Paperclip aria-hidden="true" /><span>{file.name}</span><small>{file.originalSize ? <span title="Foto reducida para enviarla más rápido">{formatSize(file.originalSize)} → {formatSize(file.size)}</span> : formatSize(file.size)}</small></li>
                     ))}
                   </ul>

@@ -3,7 +3,7 @@ import { Header } from './components/Header';
 import { WorkspaceStorage,boundedChat,isStorageProblem } from '@shared/storage/workspace-storage';
 import type { StoredDraft } from '@shared/storage/workspace-storage';
 import type { Message as ChatViewMessage } from './components/AgentChat';
-import { AgentChat } from './components/AgentChat';
+import { AgentChat, type ExternalPrompt } from './components/AgentChat';
 import { PendingActionsList } from './components/PendingActionsList';
 import { EmailInbox, type MailFolder } from './components/EmailInbox';
 import { ComposeModal, type ComposeValue } from './components/ComposeModal';
@@ -14,19 +14,34 @@ import { mailProvider } from './services/mailProvider';
 import { MAIL, ACCOUNT, STORAGE_PROVIDER, LOAD_STEP, MAX_LOADED, savedMailCount, saveMailCount } from './services/platform';
 import { agentEngine } from './services/agentEngine';
 import { parseStamp } from './services/dates';
+import { loadProviderChoice } from './services/llmClient';
+import { draftBodyFromHtml, draftHtml, draftText } from './services/richText';
+import { loadSignature, withSignature } from './services/signature';
+import { askConfirm, ConfirmHost, notify } from './components/ConfirmDialog';
 import { fromStoredProposals, toStoredProposals } from './services/proposalStore';
 import { guardrails } from './services/guardrails';
 import type { Email, PendingAction, AuditLog, AgentStep, MailFile, MailAttachment } from './types/email';
-import { Mail, ShieldAlert, History, AlertTriangle, Bot, Settings, LayoutDashboard } from 'lucide-react';
-import { analyzeMail } from '@shared/mail/mail-insights';
+import { MANUAL_BODY_PLACEHOLDER } from './services/mailIntent';
+import { Mail, ShieldAlert, History, AlertTriangle, Bot, Settings, LayoutDashboard, Clock } from 'lucide-react';
+import { analyzeMail, addFinding } from '@shared/mail/mail-insights';
+import type { AttachmentFinding } from '@shared/mail/attachment-scan';
 import { senderAuthentication } from '@shared/mail/sender-intel';
 import { observeSenders, applySenderContext, needsSentScan, markSentScan } from './services/senderHistory';
-import { learnContacts, recordSent, sentScanSize, markSentScanned } from './services/contacts';
+import { learnContacts, recordSent, sentScanSize, markSentScanned, contactsAtDomain } from './services/contacts';
 import '@shared/styles/mail-insights.css';
 import '@shared/styles/nexo-ui.css';
 import './gmail-reader.css';
 import { WorkspacePages } from './components/WorkspacePages';
 import { PrivacyConsent, recordConsent } from './components/PrivacyConsent';
+
+/** Adds what the attachments really contain (checked when the message is opened) to each message's analysis. */
+function withAttachmentFindings(list:Email[],found:Record<string,AttachmentFinding[]>):Email[]{
+  return list.map(email=>{
+    const findings=found[email.id];
+    if(!findings?.length || !email.insights)return email;
+    return {...email,insights:findings.reduce((insights,finding)=>addFinding(insights,finding.reason,finding.weight),email.insights)};
+  });
+}
 
 /** Adds what NexoMail knows from this account's own history (look-alike domains, new senders, hijacked threads). */
 function withSenderContext(list:Email[]):Email[]{
@@ -55,16 +70,21 @@ export function App() {
   const [lastSync,setLastSync]=useState<Date|null>(null);
   /** Bumped when the sent folder teaches NexoMail new contacts, so the analysis is redone. */
   const [historyVersion,setHistoryVersion]=useState(0);
-  const emails=useMemo(()=>withSenderContext(rawEmails.map(email=>({...email,insights:email.insights || analyzeMail({subject:email.subject,sender:email.sender,senderName:email.senderName,text:email.body,html:email.bodyHtml,
-    auth:email.authHeaders?senderAuthentication(email.authHeaders,email.sender):undefined,labels:[...email.labels,email.category]})}))),
+  /** What the content check of each message's attachments found (phase 3), by message id. */
+  const [attachmentFindings,setAttachmentFindings]=useState<Record<string,AttachmentFinding[]>>({});
+  const onAttachmentFindings=useCallback((email:Email,findings:AttachmentFinding[])=>setAttachmentFindings(prev=>({...prev,[email.id]:findings})),[]);
+  const emails=useMemo(()=>withAttachmentFindings(withSenderContext(rawEmails.map(email=>({...email,insights:email.insights || analyzeMail({subject:email.subject,sender:email.sender,senderName:email.senderName,text:email.body,html:email.bodyHtml,
+    auth:email.authHeaders?senderAuthentication(email.authHeaders,email.sender):undefined,labels:[...email.labels,email.category]})}))),attachmentFindings),
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  [rawEmails,historyVersion]);
+  [rawEmails,historyVersion,attachmentFindings]);
   const securityAlerts=emails.filter(email=>email.insights?.level!=='none');
   /** Strong signs of fraud, apart from details worth a look: one red count for everything made people distrust real mail. */
   const dangerousMail=securityAlerts.filter(email=>email.insights?.level==='high');
   const reviewMail=securityAlerts.filter(email=>email.insights?.level==='review');
   const [isGmailConnected, setIsGmailConnected] = useState<boolean>(mailProvider.isConnected());
   const [gmailError, setGmailError] = useState<string | null>(null);
+  /** A passing notice (the provider asked to wait), shown without the re-authorize button. */
+  const [syncNotice, setSyncNotice] = useState<string | null>(null);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
   const authorizationPending=useRef(false);
   const [isAuthorizing,setIsAuthorizing]=useState(false);
@@ -113,7 +133,7 @@ export function App() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [compose, setCompose] = useState<ComposeValue | null>(null);
-  const [agentPrompt, setAgentPrompt] = useState<{ id: string; text: string } | null>(null);
+  const [agentPrompt, setAgentPrompt] = useState<ExternalPrompt | null>(null);
   const addAudit = (actionType: AuditLog['actionType'], prompt: string, executionStatus: AuditLog['executionStatus'], details: string) =>
     setAuditLogs(prev => [{ id: crypto.randomUUID(), timestamp: new Date().toISOString(), actionType, prompt, executionStatus, details }, ...prev]);
 
@@ -130,7 +150,7 @@ export function App() {
       }
     } catch (error) {
       setFolderEmails([]);
-      alert(error instanceof Error ? error.message : 'No se pudo abrir la carpeta.');
+      void notify(error instanceof Error ? error.message : 'No se pudo abrir la carpeta.');
     } finally {
       setFolderLoading(false);
     }
@@ -151,7 +171,7 @@ export function App() {
   /** Writing by hand follows the same path as the agent: a proposal that waits in Acciones. */
   const submitCompose = (value: ComposeValue) => {
     const action = guardrails.createPendingAction('SEND_EMAIL', `Enviar correo a ${value.to}`, `Asunto: "${value.subject}"`,
-      { recipient: value.to, subject: value.subject, body: value.body, attachments: value.files, savedDraftId: value.draftId, isReal: mailProvider.isConnected(), sessionKey: mailProvider.getSessionKey() },
+      { recipient: value.to, cc: value.cc || undefined, bcc: value.bcc || undefined, subject: value.subject, body: value.body, bodyHtml: value.bodyHtml, attachments: value.files.length ? value.files : undefined, savedDraftId: value.draftId, replyToSender: value.replyToSender, isReal: mailProvider.isConnected(), sessionKey: mailProvider.getSessionKey() },
       'Lo redactaste tú. Revísalo y apruébalo para enviarlo.');
     action.isEditable = true;
     setPendingActions(prev => [action, ...prev]);
@@ -159,12 +179,74 @@ export function App() {
     setActiveTab('pending'); setMobileView('workspace');
   };
   const saveComposeDraft = (value: ComposeValue) => {
-    const draft: StoredDraft = { id: value.draftId ?? crypto.randomUUID(), to: value.to.trim(), cc: '', bcc: '', subject: value.subject, body: value.body, reply_to_id: null, attachments_omitted: value.files.length > 0, created_at: new Date().toISOString() };
+    // Formatting is kept (behind a mark in the same text column); images and attachments are not stored in drafts.
+    const rich = value.bodyHtml ? draftBodyFromHtml(value.bodyHtml) : null;
+    const draft: StoredDraft = { id: value.draftId ?? crypto.randomUUID(), to: value.to.trim(), cc: (value.cc ?? '').trim(), bcc: (value.bcc ?? '').trim(), subject: value.subject, body: rich?.body ?? value.body, reply_to_id: null, attachments_omitted: value.files.length > 0 || !!rich?.droppedImages, created_at: new Date().toISOString() };
     setSavedDrafts(list => [draft, ...list.filter(d => d.id !== draft.id)].slice(0, 50));
     setCompose(null);
   };
+  /**
+   * «Verificar por otro canal»: the assistant writes to the real organization (a contact of yours there, or one you
+   * give it), never to the suspicious address, asking whether the message is theirs. It stays in Acciones until approved.
+   */
+  /** The mail being verified: its proposal is fixed by code, whatever the assistant (or the local rules) answered. */
+  const verifyGuard = useRef<{ email: Email; marker: string } | null>(null);
+  const VERIFY_MARKER = 'correo de verificación para esa dirección oficial';
+  /**
+   * The destination of a verification is never left to the AI: it is the official address the person wrote,
+   * never the sender being checked. If the assistant wrote no usable text, a short neutral one is used.
+   */
+  const enforceVerification = (prompt: string, actions: PendingAction[]): { actions: PendingAction[]; note: string } | null => {
+    const guard = verifyGuard.current;
+    if (!guard || !prompt.includes(guard.marker)) return null;
+    verifyGuard.current = null;
+    const avoid = guard.email.sender.toLowerCase();
+    const official = (prompt.match(/[^\s<>()«»"',;:]+@[^\s<>()«»"',;:]+\.[a-z]{2,}/gi) ?? []).map(a => a.toLowerCase().replace(/\.$/, '')).find(a => a !== avoid);
+    if (!official) return null;
+    const subject = `Verificación: ¿nos enviaron este correo? «${guard.email.subject || '(sin asunto)'}»`;
+    const template = `Hola:\n\nRecibí un correo que dice venir de ustedes y quiero confirmar si es auténtico antes de hacer nada.\n\n- Remitente: ${guard.email.sender}\n- Asunto: ${guard.email.subject || '(sin asunto)'}\n- Fecha: ${guard.email.date}\n\nNo he abierto sus enlaces ni adjuntos. ¿Pueden confirmarme si lo enviaron ustedes?\n\nGracias.`;
+    const others = actions.filter(action => action.actionType !== 'SEND_EMAIL');
+    let draft = actions.find(action => action.actionType === 'SEND_EMAIL');
+    const usable = !!draft?.payload.body && !draft.payload.body.includes(MANUAL_BODY_PLACEHOLDER) && draft.payload.recipient?.toLowerCase() === official;
+    if (!draft) draft = guardrails.createPendingAction('SEND_EMAIL', '', '', {}, 'Correo de verificación por otro canal. Revísalo y apruébalo para enviarlo.');
+    draft.payload = { ...draft.payload, recipient: official, replyToSender: undefined, subject: usable ? draft.payload.subject || subject : subject, body: usable ? draft.payload.body : template, isReal: mailProvider.isConnected(), sessionKey: mailProvider.getSessionKey() };
+    draft.title = `Enviar correo a ${official}`;
+    draft.description = `Asunto: "${draft.payload.subject}"`;
+    draft.isEditable = true;
+    return { actions: [draft, ...others], note: `\n\nEl correo de verificación va a ${official}, la dirección que indicaste, nunca a ${guard.email.sender}. Revísalo en Acciones antes de aprobarlo.` };
+  };
+  const verifyByOtherChannel = (email: Email) => {
+    const reasons = email.insights?.reasons.join(' ') ?? '';
+    const real = reasons.match(/imita a [^(]*\(([^)\s]+)\)/)?.[1] ?? reasons.match(/se parece a ([a-z0-9.-]+\.[a-z]{2,})/i)?.[1] ?? reasons.match(/participaba ([a-z0-9.-]+\.[a-z]{2,})/i)?.[1];
+    const contact = real ? contactsAtDomain(mailProvider.getSessionKey(), real)[0] : undefined;
+    const about = `el correo «${email.subject || '(sin asunto)'}» que recibí de ${email.sender}${email.date ? ` (${email.date})` : ''}`;
+    // Worded without negations or «sospechoso»: the quick local rules would read it as «do nothing» or as a question about risks.
+    const rules = 'Resume en dos o tres frases qué pedía, omitiendo sus enlaces, archivos, números de cuenta y datos personales, y pide que me confirmen si es suyo. El único destinatario es la dirección oficial que te indico.';
+    // Same editable panel as «Responder con IA»: the person writes or picks the official address before anything is drafted.
+    const base = `Escribe a la organización real para verificar ${about}. Su dirección oficial es `;
+    setAgentPrompt({ id: crypto.randomUUID(), text: contact ? base + contact.address : base, edit: {
+      title: `Verificar por otro canal: «${email.subject || '(sin asunto)'}»`,
+      hint: contact
+        ? `Ya le escribiste a ${contact.address}, de ${real}. Puedes usarla o escribir otra que conozcas por su web oficial o una factura. No uses la del correo sospechoso.`
+        : 'Completa el correo oficial de la organización (algo como contacto@empresa.com): búscalo en su web oficial, en «Contacto», o en una factura. No uses la del correo sospechoso.',
+      base, options: real ? contactsAtDomain(mailProvider.getSessionKey(), real).map(c => ({ label: c.address, text: c.address })) : [],
+      suffix: `Redacta con prepare_send_email un ${VERIFY_MARKER}. ${rules}`,
+      requireAddress: { avoid: email.sender } } });
+    verifyGuard.current = { email, marker: VERIFY_MARKER };
+    setActiveTab('inbox'); setMobileView('chat');
+  };
+  /** «Responder con IA» opens the chat with an editable request and suggested answers; nothing is drafted until it is sent. */
   const replyWithAI = (email: Email) => {
-    setAgentPrompt({ id: crypto.randomUUID(), text: `Redacta una respuesta formal y cordial al correo de ${email.sender} sobre "${email.subject}"` });
+    const base = `Responde al correo «${email.subject || '(sin asunto)'}» de ${email.sender} `;
+    const options = [
+      { label: 'Respuesta cordial', text: 'de forma cordial, respondiendo a lo que pide.' },
+      { label: 'Aceptar', text: 'diciendo que acepto lo que propone.' },
+      { label: 'Rechazar con amabilidad', text: 'rechazando con amabilidad lo que propone.' },
+      { label: 'Pedir más información', text: 'pidiendo más información antes de decidir.' },
+      { label: 'Agradecer', text: 'agradeciendo el mensaje.' },
+      { label: 'Confirmar recepción', text: 'confirmando que lo recibí y que lo reviso pronto.' },
+    ];
+    setAgentPrompt({ id: crypto.randomUUID(), text: base + options[0].text, edit: { title: `Responder a ${email.senderName || email.sender}: «${email.subject || '(sin asunto)'}»`, hint: 'Escribe o elige qué quieres responder. La IA redactará el correo y lo dejará en Acciones para que lo revises.', base, options, suffix: `(Correo id=${email.id}. Prepara la respuesta con prepare_send_email para ${email.sender}.)` } });
     setMobileView('chat');
   };
 
@@ -189,9 +271,22 @@ export function App() {
       addAudit('RESTORE_EMAIL', 'Recuperación manual desde la papelera', 'HUMAN_APPROVED', `${ids.length} correo(s) devuelto(s) a la bandeja de entrada.`);
     } catch (error) {
       addAudit('RESTORE_EMAIL', 'Recuperación manual desde la papelera', 'FAILED', error instanceof Error ? error.message : 'No se pudo recuperar.');
-      alert(error instanceof Error ? error.message : 'No se pudo recuperar el correo.');
+      void notify(error instanceof Error ? error.message : 'No se pudo recuperar el correo.');
     }
     // Leaves the trash at once; the inbox refresh downloads only the recovered messages.
+    setFolderEmails(prev => prev ? prev.filter(email => !ids.includes(email.id)) : prev);
+    await refreshEmails();
+  };
+
+  const handleMarkSpam = async (ids: string[]) => {
+    try {
+      if (mailProvider.isConnected()) await mailProvider.markSpamEmails(ids);
+      else emailProvider.markSpam(ids);
+      addAudit('LABEL_EMAIL', 'Reportado como spam', 'HUMAN_APPROVED', `${ids.length} correo(s) movido(s) a No deseado.`);
+    } catch (error) {
+      addAudit('LABEL_EMAIL', 'Reportado como spam', 'FAILED', error instanceof Error ? error.message : 'No se pudo mover.');
+      void notify(error instanceof Error ? error.message : 'No se pudo mover el correo a No deseado.');
+    }
     setFolderEmails(prev => prev ? prev.filter(email => !ids.includes(email.id)) : prev);
     await refreshEmails();
   };
@@ -203,7 +298,7 @@ export function App() {
       addAudit('RESTORE_EMAIL', 'Marcado como «no es spam»', 'HUMAN_APPROVED', `${ids.length} correo(s) movido(s) de No deseado a la bandeja de entrada.`);
     } catch (error) {
       addAudit('RESTORE_EMAIL', 'Marcado como «no es spam»', 'FAILED', error instanceof Error ? error.message : 'No se pudo mover.');
-      alert(error instanceof Error ? error.message : 'No se pudo mover el correo.');
+      void notify(error instanceof Error ? error.message : 'No se pudo mover el correo.');
     }
     setFolderEmails(prev => prev ? prev.filter(email => !ids.includes(email.id)) : prev);
     await refreshEmails();
@@ -224,7 +319,7 @@ export function App() {
       addAudit('LABEL_EMAIL', `Clasificación manual: ${email.subject}`, 'HUMAN_APPROVED', category ? `Etiqueta «${category}» aplicada en ${MAIL}.` : 'Clasificación manual retirada.');
     } catch (error) {
       addAudit('LABEL_EMAIL', `Clasificación manual: ${email.subject}`, 'FAILED', error instanceof Error ? error.message : 'No se pudo clasificar.');
-      alert(error instanceof Error ? error.message : 'No se pudo clasificar el correo.');
+      void notify(error instanceof Error ? error.message : 'No se pudo clasificar el correo.');
     }
   };
 
@@ -265,7 +360,7 @@ export function App() {
     setActiveTab('inbox');setMobileView('workspace');setMailFocus(openRequest);setOpenRequest(null);
   },[openRequest,isFloating,isExpanded]);
   function openMailFromChat(id:string){
-    if(!emails.some(email=>email.id===id)){window.alert('Ese correo ya no está entre los cargados: puede que lo hayas movido o que ya no esté entre los más recientes. Búscalo en la pestaña Correo.');return;}
+    if(!emails.some(email=>email.id===id)){void notify('Ese correo ya no está entre los cargados: puede que lo hayas movido o que ya no esté entre los más recientes. Búscalo en la pestaña Correo.');return;}
     if(mailFolder!=='inbox')setMailFolder('inbox');
     setSelectedCategory('Todos');
     setOpenRequest({id,nonce:Date.now()});
@@ -297,7 +392,7 @@ export function App() {
         const refreshKey=mailProvider.getSessionKey();
         const realEmails = await mailProvider.fetchEmails('in:inbox', loadLimitRef.current);
         if(refreshKey!==mailProvider.getSessionKey())return;
-        setEmails(realEmails);setLastSync(new Date());agentEngine.setInboxSnapshot(withSenderContext(realEmails));
+        setEmails(realEmails);setLastSync(new Date());setSyncNotice(null);agentEngine.setInboxSnapshot(withSenderContext(realEmails));
         // The sent folder tells NexoMail who your contacts are: the first time up to 200 messages back (so the AI
         // remembers addresses you wrote to long ago), then the newest ones once a day. Read-only, in the background,
         // and 20 s after connecting, so it never competes with loading the inbox or verifying the account.
@@ -312,8 +407,14 @@ export function App() {
         return;
       } catch (err: any) {
         console.error(`Error al cargar correos reales de ${MAIL}:`, err);
-        setGmailError(err.message || `Error de credenciales de ${ACCOUNT}`);
         setIsGmailConnected(true);
+        // A per-minute limit is not an authorization problem: the mails on screen stay, nothing asks to re-authorize,
+        // and the next automatic refresh (within a minute) tries again.
+        if (/limitó temporalmente/.test(err?.message ?? '')) {
+          setSyncNotice(`${MAIL} pidió esperar un momento antes de más consultas. Se muestran los correos de la última actualización; se reintentará solo en un minuto.`);
+          return;
+        }
+        setGmailError(err.message || `Error de credenciales de ${ACCOUNT}`);
         setEmails([]);
         return;
       }
@@ -360,6 +461,7 @@ export function App() {
           const changed=!!marker && next!==marker;
           marker=next;
           if(changed)await tick(true);
+          else agentEngine.touchInboxSnapshot();
         }
       }catch{/* the minute timer stays as a fallback */}finally{checking=false;}
     };
@@ -377,17 +479,24 @@ export function App() {
 
   useEffect(()=>{
     database.current?.close();database.current=null;setStorageReady(false);setProposalsReady(false);setStorageLoading(false);
+    // Each account keeps the AI model chosen for it in this browser.
+    loadProviderChoice(isGmailConnected?mailProvider.accountEmail():'');
     if(!isGmailConnected){setRestoredChat([]);setSavedDrafts([]);setAuditLogs([]);agentEngine.clearHistory();setStorageStatus('PostgreSQL · Conecta tu cuenta para recuperar los datos');return;}
     setStorageLoading(true);
-    const key=mailProvider.getSessionKey();
+    // The saved data belongs to an account, not to one Google/Microsoft session: a renewed session of the same
+    // account (another tab, a new authorization) keeps saving. Before, it stopped with «La cuenta cambió».
+    const owner=mailProvider.accountEmail().toLowerCase();
+    const sameAccount=()=>mailProvider.isConnected() && !!owner && mailProvider.accountEmail().toLowerCase()===owner;
     const store=new WorkspaceStorage(STORAGE_PROVIDER,window.emailAgentHost.config,async()=>{
-      if(key!==mailProvider.getSessionKey())throw new Error('La cuenta cambió.');
-      return mailProvider.storageAccessToken();
+      if(!sameAccount())throw new Error('La cuenta cambió.');
+      const token=await mailProvider.storageAccessToken();
+      if(!sameAccount())throw new Error('La cuenta cambió.');
+      return token;
     },setStorageStatus);
     database.current=store;
     let active=true;
     void store.load().then(data=>{
-      if(!active || key!==mailProvider.getSessionKey())return;
+      if(!active || !sameAccount())return;
       setRestoredChat(data.sections.chat.data.map(message=>({id:message.id,sender:message.role==='user'?'user':'agent',text:message.content,created_at:message.created_at,timestamp:new Date(message.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})})));
       agentEngine.restoreTextHistory(data.sections.chat.data);
       setSavedDrafts(data.sections.drafts.data);
@@ -396,8 +505,8 @@ export function App() {
       if(prefs){setTheme(prefs.theme);setStrictMode(prefs.strict_mode);guardrails.setStrictMode(prefs.strict_mode);setAutoGrouping(prefs.auto_grouping);}
       setStorageReady(true);
       void store.loadProposals().then(list=>{
-        if(!active || key!==mailProvider.getSessionKey())return;
-        const restored=fromStoredProposals(list,key,mailProvider.isConnected());
+        if(!active || !sameAccount())return;
+        const restored=fromStoredProposals(list,mailProvider.getSessionKey(),mailProvider.isConnected());
         if(restored.length)setPendingActions(prev=>[...prev,...restored.filter(item=>!prev.some(existing=>existing.id===item.id))]);
         setProposalsReady(true);
       }).catch(()=>{});
@@ -419,7 +528,7 @@ export function App() {
   };
 
   const eraseStoredData=async()=>{
-    if(!database.current?.ready || !confirm('¿Vaciar el chat, los borradores, las preferencias y la auditoría de esta cuenta en PostgreSQL? No se borrarán correos del buzón.'))return;
+    if(!database.current?.ready || !(await askConfirm({title:'¿Vaciar los datos guardados?',message:'Se borrarán el chat, los borradores, las preferencias y la auditoría de esta cuenta en PostgreSQL. No se borrarán correos del buzón.',confirmLabel:'Vaciar',danger:true})))return;
     try{await database.current.erase();location.reload();}catch(error){setStorageStatus((error as Error).message);}
   };
 
@@ -436,6 +545,8 @@ export function App() {
       const sessionKey=mailProvider.getSessionKey();
       const res = await agentEngine.processPrompt(prompt, files.map(file=>file.name));
       if(sessionKey!==mailProvider.getSessionKey())throw new Error('La sesión cambió durante la consulta. Vuelve a intentarlo.');
+      const verified = enforceVerification(prompt, res.pendingActions);
+      if (verified) { res.pendingActions = verified.actions; res.finalAnswer = res.pendingActions.length && /no se podrá aprobar|Escribe el mensaje/i.test(res.finalAnswer) ? 'Preparé el correo de verificación.' + verified.note : res.finalAnswer + verified.note; }
       // Files go with the message the agent prepared; nothing is sent until it is approved.
       const draft=files.length?res.pendingActions.find(action=>action.actionType==='SEND_EMAIL'):undefined;
       if(draft){draft.payload.attachments=files;res.finalAnswer+=`\n\nAdjunté ${files.length===1?'1 archivo':files.length+' archivos'} al correo propuesto.`;}
@@ -455,7 +566,10 @@ export function App() {
         setAuditLogs(prev => [...res.auditLogs, ...prev]);
       }
 
-      if (res.pendingActions.length > 0 || res.auditLogs.length > 0) await refreshEmails();
+      // Only when something in the mailbox changed (a label applied): a proposal changes nothing until approved, and
+      // downloading the inbox after every question spent Gmail's per-minute quota. In the background, so the answer
+      // appears at once.
+      if (res.auditLogs.some(log => log.actionType === 'LABEL_EMAIL')) void refreshEmails();
 
       return {
         answer: res.finalAnswer,
@@ -470,12 +584,12 @@ export function App() {
   const handleApproveAction = async (action: PendingAction) => {
     if(executingActions.current.has(action.id) || attemptedActions.current.has(action.id)) return;
     if(!pendingActions.some(item=>item.id===action.id)) return;
-    if(action.payload.sessionKey!==mailProvider.getSessionKey() || action.payload.isReal!==mailProvider.isConnected()){alert('Esta propuesta pertenece a otra sesión o modo. Recházala y prepara una nueva.');return;}
+    if(action.payload.sessionKey!==mailProvider.getSessionKey() || action.payload.isReal!==mailProvider.isConnected()){void notify('Esta propuesta pertenece a otra sesión o modo. Recházala y prepara una nueva.');return;}
     if(action.actionType==='SEND_EMAIL' && storageReady && savedDrafts.some(d=>d.id===(action.payload.savedDraftId || action.id))){
       executingActions.current.add(action.id);
       const remaining=savedDrafts.filter(d=>d.id!==(action.payload.savedDraftId || action.id));
       try{await database.current!.save('drafts',remaining);setSavedDrafts(remaining);}
-      catch{alert('No se pudo retirar el borrador de PostgreSQL. No se inició el envío para evitar duplicados. Recarga NexoMail y revisa el estado.');return;}
+      catch{void notify('No se pudo retirar el borrador de PostgreSQL. No se inició el envío para evitar duplicados. Recarga NexoMail y revisa el estado.');return;}
       finally{executingActions.current.delete(action.id);}
     }
     const isReal = mailProvider.isConnected();
@@ -502,8 +616,9 @@ export function App() {
         }
       } else if (action.actionType === 'SEND_EMAIL') {
         if (isReal && action.payload.recipient && action.payload.subject && action.payload.body) {
-          await mailProvider.sendEmail(action.payload.recipient, action.payload.subject, action.payload.body, action.payload.attachments);
-          recordSent(mailProvider.getSessionKey(), action.payload.recipient);
+          await mailProvider.sendEmail(action.payload.recipient, action.payload.subject, action.payload.body, action.payload.attachments,
+            { cc: action.payload.cc, bcc: action.payload.bcc, html: action.payload.bodyHtml });
+          recordSent(mailProvider.getSessionKey(), [action.payload.recipient, action.payload.cc, action.payload.bcc].filter(Boolean).join(', '));
         } else {
           emailProvider.addDraftOrSentEmail({
             sender: 'usuario@miempresa.com',
@@ -537,7 +652,7 @@ export function App() {
       // Over the per-minute limit the provider refused the request, so nothing changed: the proposal stays to approve again.
       if (/limitó temporalmente las peticiones/.test(err?.message ?? '')) {
         attemptedActions.current.delete(action.id);
-        alert(`${err.message}
+        void notify(`${err.message}
 
 La propuesta sigue en Acciones para que la apruebes de nuevo.`);
         setAuditLogs(prev=>[{id:crypto.randomUUID(),timestamp:new Date().toISOString(),actionType:action.actionType,prompt:action.title,executionStatus:'FAILED',details:`${MAIL} limitó temporalmente las peticiones. No se hizo ningún cambio; la propuesta sigue pendiente.`},...prev]);
@@ -546,11 +661,11 @@ La propuesta sigue en Acciones para que la apruebes de nuevo.`);
       // The permission failed before the request reached the mail service, so nothing was sent or changed.
       if (err?.authorization === true) {
         attemptedActions.current.delete(action.id);
-        alert(`${ACCOUNT} no renovó el permiso de NexoMail: ${err.message}\n\nNo se envió ni se cambió nada. La propuesta sigue en Acciones para que la apruebes de nuevo.`);
+        void notify(`${ACCOUNT} no renovó el permiso de NexoMail: ${err.message}\n\nNo se envió ni se cambió nada. La propuesta sigue en Acciones para que la apruebes de nuevo.`);
         setAuditLogs(prev=>[{id:crypto.randomUUID(),timestamp:new Date().toISOString(),actionType:action.actionType,prompt:action.title,executionStatus:'FAILED',details:`${ACCOUNT} no renovó el permiso. No se hizo ningún cambio; la propuesta sigue pendiente.`},...prev]);
         return;
       }
-      alert(`No se pudo confirmar la acción: ${err.message}. Revisa ${MAIL} antes de preparar otra propuesta. No se reintentará automáticamente.`);
+      void notify(`No se pudo confirmar la acción: ${err.message}. Revisa ${MAIL} antes de preparar otra propuesta. No se reintentará automáticamente.`);
       setPendingActions(prev=>prev.filter(item=>item.id!==action.id));
       setAuditLogs(prev=>[{id:crypto.randomUUID(),timestamp:new Date().toISOString(),actionType:action.actionType,prompt:action.title,executionStatus:'FAILED',details:'No se pudo confirmar el resultado. Sin reintento automático.'},...prev]);
     } finally {
@@ -590,7 +705,7 @@ La propuesta sigue en Acciones para que la apruebes de nuevo.`);
       if (mailProvider.isConnected()) await mailProvider.trashEmails(ids);
       else emailProvider.trashEmails(ids);
     } catch (error) {
-      alert(error instanceof Error ? error.message : 'No se pudo mover a la papelera.');
+      void notify(error instanceof Error ? error.message : 'No se pudo mover a la papelera.');
       return;
     }
     patchLocal(ids, () => null);
@@ -632,6 +747,7 @@ La propuesta sigue en Acciones para que la apruebes de nuevo.`);
         </details>}/>
       {isAuthorizing && <div className="storage-status" role="status">Esperando autorización en {ACCOUNT}…</div>}
       {gmailError && <div className="api-alert-banner" role="alert"><AlertTriangle size={17}/><span>{gmailError}</span><button disabled={isAuthorizing} onClick={()=>void authorizeGmail()} className="workspace-button">Reautorizar con {ACCOUNT}</button></div>}
+      {!gmailError && syncNotice && <div className="api-alert-banner sync-notice" role="status"><Clock size={16}/><span>{syncNotice}</span></div>}
       {isStorageProblem(storageStatus) && <div className="storage-status" role="alert"><span>{storageStatus}</span></div>}
       <div className="workspace-shell">
         <aside className="workspace-sidebar" aria-label={`Navegación de ${MAIL}`}>
@@ -644,12 +760,13 @@ La propuesta sigue en Acciones para que la apruebes de nuevo.`);
             <AgentChat active={currentView==='chat'} externalPrompt={agentPrompt} onSendPrompt={handleSendPrompt} isProcessing={isProcessing || storageLoading} restoredMessages={restoredChat} onHistoryChange={saveChat} onOpenMail={openMailFromChat}
               onClearHistory={()=>agentEngine.clearHistory()}/>
           </section>
-          <section className="workspace-page" hidden={currentView!=='inbox'}><EmailInbox updatedAt={lastSync?lastSync.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):undefined} automatic={autoGrouping} onAutomaticChange={setAutoGrouping} emails={emails} onMarkRead={handleMarkRead} onTrash={handleTrash} selectedCategory={selectedCategory} onSelectCategory={setSelectedCategory} folder={mailFolder} onSelectFolder={selectFolder} folderEmails={folderEmails} folderLoading={folderLoading} onRefresh={()=>void syncMail()} refreshing={syncing || folderLoading} drafts={savedDrafts} onOpenDraft={draft=>setCompose({to:draft.to,subject:draft.subject,body:draft.body,files:[],draftId:draft.id})} onDiscardDraft={id=>setSavedDrafts(list=>list.filter(d=>d.id!==id))} onCompose={prefill=>setCompose({to:prefill?.to ?? '',subject:prefill?.subject ?? '',body:'',files:[]})} onReplyWithAI={replyWithAI} onRestore={handleRestore} onNotSpam={handleNotSpam} onSetCategory={handleSetCategory} onListAttachments={listAttachments} onDownloadAttachment={downloadAttachment} loadLimit={loadLimit} maxLoaded={MAX_LOADED} onLoadMore={()=>void loadMore()} loadingMore={loadingMore} connected={isGmailConnected} focus={mailFocus}/></section>
+          <section className="workspace-page" hidden={currentView!=='inbox'}><EmailInbox updatedAt={lastSync?lastSync.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):undefined} automatic={autoGrouping} onAutomaticChange={setAutoGrouping} emails={emails} onMarkRead={handleMarkRead} onTrash={handleTrash} selectedCategory={selectedCategory} onSelectCategory={setSelectedCategory} folder={mailFolder} onSelectFolder={selectFolder} folderEmails={folderEmails} folderLoading={folderLoading} onRefresh={()=>void syncMail()} refreshing={syncing || folderLoading} drafts={savedDrafts} onOpenDraft={draft=>setCompose({to:draft.to,cc:draft.cc,bcc:draft.bcc,subject:draft.subject,body:draftText(draft.body),bodyHtml:draftHtml(draft.body),files:[],draftId:draft.id})} onDiscardDraft={id=>setSavedDrafts(list=>list.filter(d=>d.id!==id))} onCompose={prefill=>setCompose({to:prefill?.to ?? '',subject:prefill?.subject ?? '',body:'',bodyHtml:withSignature(loadSignature(mailProvider.accountEmail())),files:[],replyToSender:prefill?.replyToSender})} onReplyWithAI={replyWithAI} onVerifyByOtherChannel={verifyByOtherChannel} onRestore={handleRestore} onNotSpam={handleNotSpam} onMarkSpam={handleMarkSpam} onSetCategory={handleSetCategory} onListAttachments={listAttachments} onAttachmentFindings={onAttachmentFindings} onDownloadAttachment={downloadAttachment} loadLimit={loadLimit} maxLoaded={MAX_LOADED} onLoadMore={()=>void loadMore()} loadingMore={loadingMore} connected={isGmailConnected} focus={mailFocus}/></section>
           <section className="workspace-page workspace-scroll page-narrow" hidden={currentView!=='pending'}><div className="workspace-section-heading"><ShieldAlert size={21}/><h2>Acciones pendientes</h2><span className="workspace-count">{pendingActions.length}</span></div><p className="pa-intro">Revisa el destinatario y el contenido. Nada se ejecuta hasta que lo apruebes.</p><PendingActionsList pendingActions={pendingActions} onApprove={handleApproveAction} onReject={handleRejectAction} onGoToChat={()=>navigate('chat')} onChange={()=>setPendingActions(list=>[...list])}/></section>
           <section className="workspace-page workspace-scroll page-medium" hidden={currentView!=='audit'}><AuditLogView logs={auditLogs}/></section>
           {(currentView==='summary' || currentView==='settings') && <WorkspacePages storageStatus={storageStatus} storageReady={storageReady} onEraseStorage={eraseStoredData} view={currentView} emails={emails} pendingCount={pendingActions.length} logCount={auditLogs.length} theme={theme} strictMode={strictMode} onToggleTheme={handleToggleTheme} onToggleStrictMode={handleToggleStrictMode} onAuthorize={async()=>{if(isGmailConnected)setIsAuthModalOpen(true);else await authorizeGmail();}} authorizing={isAuthorizing} connected={isGmailConnected} mailCount={mailCount} onMailCount={changeMailCount}/>}
         </main>
       </div>
+      <ConfirmHost/>
       <ComposeModal value={compose} onClose={()=>setCompose(null)} onSubmit={submitCompose} onSaveDraft={saveComposeDraft}/>
       <PrivacyConsent open={consentOpen} provider={MAIL} onCancel={()=>setConsentOpen(false)} onAccept={()=>{setConsentOpen(false);void startGmailAuthorization();}}/>
       <GmailAuthModal isOpen={isAuthModalOpen} onClose={()=>setIsAuthModalOpen(false)} onConnect={clientId=>{setIsAuthModalOpen(false);void authorizeGmail(clientId);}} onBeforeDisconnect={()=>database.current?.flush()} onConnectSuccess={()=>{setIsAuthModalOpen(false);setPendingActions([]);agentEngine.clearHistory();refreshEmails();}}/>

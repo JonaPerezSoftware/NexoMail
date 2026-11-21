@@ -20,8 +20,17 @@ class Settings(BaseSettings):
     LLM_PROVIDER: Literal['gemini', 'anthropic', 'ollama'] = 'gemini'
     LLM_MODEL: str = 'gemini-3.5-flash-lite'
     GEMINI_API_KEY: SecretStr = SecretStr('')
+    # Gemini's own model setting, so it can be chosen in the app while LLM_PROVIDER is another one.
+    # Empty: LLM_MODEL when it names a Gemini model.
+    GEMINI_MODEL: str = ''
     LLM_MESSAGE_LIMIT: int = Field(default=6, ge=1, le=12)
     ANTHROPIC_API_KEY: SecretStr = SecretStr('')
+    # Claude (LLM_PROVIDER=anthropic). Its own model setting, so switching provider is a single line.
+    ANTHROPIC_MODEL: str = 'claude-opus-5-5'
+    # Claude thinks before answering and that counts toward this limit, so it is higher than LLM_MAX_OUTPUT_TOKENS.
+    ANTHROPIC_MAX_TOKENS: int = Field(default=16000, ge=2048, le=64000)
+    # How much Claude thinks: low is fast and cheap; medium for harder requests.
+    ANTHROPIC_EFFORT: Literal['low', 'medium', 'high', 'xhigh', 'max'] = 'low'
     LLM_MAX_OUTPUT_TOKENS: int = Field(default=1200, ge=256, le=4096)
     LLM_CONTEXT_CHARS: int = Field(default=32000, ge=4000, le=48000)
     OLLAMA_URL: str = "http://127.0.0.1:11434"

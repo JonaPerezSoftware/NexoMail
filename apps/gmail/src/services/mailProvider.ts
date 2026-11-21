@@ -3,6 +3,9 @@ import { realGmailProvider } from './realGmailProvider';
 import { outlookProvider } from './outlookProvider';
 import type { Email, MailAttachment, MailFile } from '../types/email';
 
+/** What a message carries besides To, subject and plain text: copies and the formatted version. */
+export interface OutgoingExtra { cc?: string; bcc?: string; html?: string }
+
 export { MAX_ATTACHMENT_BYTES } from './platform';
 
 /** What the interface needs from a mailbox. Gmail and Outlook each implement it with their own API. */
@@ -23,13 +26,18 @@ export interface MailProvider {
   changeMarker(): Promise<string>;
   /** Moves messages out of spam into the inbox (the provider also learns they were not spam). */
   notSpamEmails(ids: string[]): Promise<void>;
+  /** Reports messages as spam: they move to the spam/junk folder and the provider learns from it. */
+  markSpamEmails(ids: string[]): Promise<void>;
   labelEmails(ids: string[], label: string): Promise<void>;
   removeLabel(ids: string[], label: string): Promise<void>;
-  sendEmail(recipient: string, subject: string, body: string, attachments?: MailFile[]): Promise<void>;
+  /** body is the plain-text copy; extra.html (sanitized) is sent as the formatted version, with inline images among the attachments. */
+  sendEmail(recipient: string, subject: string, body: string, attachments?: MailFile[], extra?: OutgoingExtra): Promise<void>;
   markAsRead(id: string): Promise<void>;
   /** Attachments of a message (Outlook asks for them only when the message is opened). */
   listAttachments(email: Email): Promise<MailAttachment[]>;
   downloadAttachment(email: Email, attachment: MailAttachment): Promise<Blob>;
+  /** Outlook only: the content id of an image inside the text, which its attachment list does not include. */
+  inlineContentId?(email: Email, attachment: MailAttachment): Promise<string>;
 }
 
 export const mailProvider: MailProvider = PLATFORM === 'outlook' ? outlookProvider : realGmailProvider;

@@ -543,3 +543,158 @@ a.pa-btn{text-decoration:none}
 .be-links .be-link-warn{border-color:color-mix(in srgb,var(--accent-amber-text) 40%,transparent);background:var(--accent-amber-subtle)}
 .be-links .be-link-warn svg,.be-links .be-link-warn small{color:var(--accent-amber-text)}
 .pa-message .pa-link{color:var(--accent-primary-text);text-decoration:underline;text-underline-offset:2px;cursor:help}
+
+/* Phase 3 and 4: warnings before sending, attachment content checks and «Verificar por otro canal». */
+.pa-outgoing{list-style:none;margin:0;padding:10px 12px;display:flex;flex-direction:column;gap:6px;border:1px solid color-mix(in srgb,var(--accent-amber-text) 40%,transparent);border-radius:10px;background:var(--accent-amber-subtle);color:var(--accent-amber-text);font-size:13px;line-height:1.45}
+.pa-outgoing li{display:flex;gap:8px;align-items:flex-start}
+.pa-outgoing svg{flex:0 0 auto;width:15px;height:15px;margin-top:2px}
+.att-scan{display:flex;align-items:center;gap:6px;margin-top:3px;font-size:12px;line-height:1.4;overflow-wrap:anywhere}
+.att-scan svg{width:13px;height:13px;flex:0 0 auto}
+.att-scan-ok{color:var(--text-secondary)}
+.att-scan-warn{color:var(--accent-amber-text)}
+.att-scan-danger{color:var(--pa-danger);font-weight:600}
+.mail-safety .mail-verify{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:8px}
+.mail-safety .mail-verify small{font-size:12px;opacity:.85;flex:1 1 240px}
+
+/* «Responder con IA»: the request waits above the input, with ready-made answers */
+.chat-reply-panel{margin:0 18px;padding:10px 12px;border:1px solid var(--border-default);border-bottom:0;border-radius:12px 12px 0 0;background:color-mix(in srgb,var(--accent-primary) 6%,var(--bg-surface))}
+.chat-reply-head{display:flex;align-items:flex-start;gap:10px}
+.chat-reply-head>svg{width:18px;height:18px;flex:none;margin-top:2px;color:var(--accent-primary-text)}
+.chat-reply-head>span{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.chat-reply-head strong{font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chat-reply-head small{font-size:12px;color:var(--text-secondary);line-height:1.4}
+.chat-reply-close{display:grid;place-items:center;width:28px;height:28px;flex:none;border:0;border-radius:8px;background:transparent;color:var(--text-secondary);cursor:pointer}
+.chat-reply-close:hover{background:var(--bg-panel);color:var(--text-primary)}
+.chat-reply-close svg{width:16px;height:16px}
+.chat-reply-options{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.chat-reply-options button{padding:5px 11px;border:1px solid var(--border-default);border-radius:999px;background:var(--bg-surface);color:var(--text-primary);font:inherit;font-size:12.5px;cursor:pointer}
+.chat-reply-options button:hover{border-color:var(--accent-primary)}
+.chat-reply-options button.active{border-color:var(--accent-primary);background:color-mix(in srgb,var(--accent-primary) 14%,var(--bg-surface));color:var(--accent-primary-text);font-weight:600}
+@media(min-width:850px){.outlook-layout .chat-reply-panel,.floating-mode .chat-reply-panel{margin:0 max(24px,calc((100% - 880px)/2))}}
+
+.chat-input.chat-input-edit,.outlook-layout .chat-input.chat-input-edit{min-height:72px;padding:10px 14px;line-height:1.45;resize:none;font-family:inherit;border-color:var(--accent-primary)}
+.chat-reply-panel+.chat-input-area{align-items:flex-end}
+.chat-reply-error{margin:8px 0 0;font-size:12.5px;font-weight:600;color:var(--pa-danger)}
+
+/* The answer while the AI writes it */
+.chat-partial{position:relative}
+.chat-partial-caret{display:inline-block;width:7px;height:1.05em;margin-left:2px;vertical-align:text-bottom;border-radius:2px;background:var(--accent-primary);animation:chat-caret 1s steps(2,start) infinite}
+@keyframes chat-caret{to{visibility:hidden}}
+@media (prefers-reduced-motion:reduce){.chat-partial-caret{animation:none;opacity:.6}}
+
+/* A passing notice (the provider asked to wait): quieter than an error, no action needed */
+.api-alert-banner.sync-notice{justify-content:flex-start;background:var(--bg-panel);color:var(--text-secondary);border-color:var(--border-default)}
+.api-alert-banner.sync-notice svg{color:var(--text-secondary)}
+
+/* Choosing the AI model: Ajustes (one card per model) and the chat footer (small menu) */
+.st-group>.st-row.st-model{min-height:0;padding-bottom:6px;border-bottom:0}
+/* Part of the same white box as the rows above and below it */
+.st-group>.model-choice,.st-group>.model-choice-empty{border:1px solid var(--border-default);border-top:0;background:var(--bg-surface)}
+.model-choice{display:grid;gap:12px;padding:8px 18px 20px}
+.model-choice-empty{margin:0;padding:4px 18px 20px;font-size:13px;color:var(--text-secondary)}
+.model-option{display:flex;align-items:flex-start;gap:12px;padding:14px 16px;border:1px solid var(--border-default);border-radius:12px;background:var(--bg-surface);cursor:pointer;transition:border-color .15s,background .15s}
+.model-option:hover:not(.disabled){border-color:var(--accent-primary)}
+.model-option.selected{border-color:var(--accent-primary);background:color-mix(in srgb,var(--accent-primary) 7%,var(--bg-surface))}
+.model-option.disabled{cursor:not-allowed;opacity:.6}
+.model-option input{margin-top:3px;accent-color:var(--accent-primary);flex:none}
+.model-option:has(input:focus-visible){outline:2px solid var(--accent-primary);outline-offset:2px}
+.model-option-text{display:flex;flex-direction:column;gap:5px;min-width:0}
+.model-option-text strong{font-size:14px;font-weight:600}
+.model-option-text strong span{font-weight:400;color:var(--text-secondary)}
+.model-option-text small{font-size:12.5px;line-height:1.45;color:var(--text-secondary)}
+.chat-meta-model{display:inline-flex;align-items:center;min-width:0;white-space:nowrap}
+.chat-meta-memory{overflow:hidden;text-overflow:ellipsis}
+.model-menu{position:relative;display:inline-flex;min-width:0}
+.model-menu-button{border:0;background:transparent;color:inherit;font:inherit;padding:2px 6px;margin-left:-6px;border-radius:6px;cursor:pointer}
+.model-menu-button:hover:not(:disabled){background:var(--bg-panel);color:var(--text-primary)}
+.model-menu-button:focus-visible{outline:2px solid var(--accent-primary);outline-offset:1px}
+.model-menu-button:disabled{cursor:default}
+.chat-meta svg.model-menu-chevron{width:13px;height:13px;opacity:.8}
+.model-menu-list{position:absolute;left:0;bottom:calc(100% + 6px);z-index:60;min-width:250px;padding:6px;border:1px solid var(--border-default);border-radius:12px;background:var(--bg-surface);box-shadow:0 12px 32px -12px #0b142455;display:grid;gap:2px}
+.model-menu-list button{display:flex;align-items:flex-start;gap:8px;width:100%;padding:8px 10px;border:0;border-radius:8px;background:transparent;color:var(--text-primary);font:inherit;text-align:left;cursor:pointer}
+.model-menu-list button:hover:not(:disabled),.model-menu-list button:focus-visible{background:var(--bg-panel);outline:none}
+.model-menu-list button:disabled{opacity:.55;cursor:not-allowed}
+.model-menu-list strong{display:block;font-size:13px;font-weight:600}
+.model-menu-list small{display:block;font-size:11.5px;color:var(--text-secondary)}
+.model-menu-check{width:16px;flex:none;color:var(--accent-primary-text);padding-top:1px}
+.chat-meta .model-menu-check svg{width:15px;height:15px}
+
+/* Close button of the links notice: the general reader-button rule above gave it a border and side padding,
+   which squeezed and cut the icon. A plain round icon button, like other close buttons. */
+.mx-reader .nexo-mail-document .lk-hint-close,.lk-hint .lk-hint-close{display:grid;place-items:center;width:32px;height:32px;min-width:32px;padding:0;margin:0;border:0;border-radius:8px;background:transparent;color:var(--text-secondary);box-shadow:none;cursor:pointer}
+.mx-reader .nexo-mail-document .lk-hint-close:hover,.lk-hint .lk-hint-close:hover{background:var(--bg-panel);color:var(--text-primary)}
+.mx-reader .nexo-mail-document .lk-hint-close:focus-visible,.lk-hint .lk-hint-close:focus-visible{outline:2px solid var(--accent-primary);outline-offset:1px}
+.lk-hint .lk-hint-close svg{width:16px;height:16px}
+
+/* ===== Compose editor, like Gmail's: toolbar + what-you-see-is-what-is-sent area ===== */
+.re{display:grid;gap:8px;margin-top:6px}
+.re-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:2px;padding:4px;border:1px solid var(--border-default);border-radius:10px;background:var(--bg-panel)}
+.re-btn{display:inline-grid;place-items:center;min-width:30px;height:30px;padding:0 6px;border:0;border-radius:7px;background:transparent;color:var(--text-secondary);font:inherit;font-size:13px;font-weight:650;cursor:pointer}
+.re-btn svg{width:16px;height:16px}
+.re-btn:hover{background:var(--bg-surface);color:var(--text-primary)}
+.re-btn.on{background:color-mix(in srgb,var(--accent-primary) 16%,var(--bg-surface));color:var(--accent-primary-text)}
+.re-btn:focus-visible{outline:2px solid var(--accent-primary);outline-offset:1px}
+.re-sep{width:1px;height:20px;margin:0 4px;background:var(--border-default)}
+.re-group{position:relative;display:inline-flex}
+.re-pop{position:absolute;top:calc(100% + 6px);left:0;z-index:70;padding:8px;border:1px solid var(--border-default);border-radius:12px;background:var(--bg-surface);box-shadow:0 12px 32px -12px #0b142455}
+.re-pop-menu{display:grid;min-width:140px;padding:4px}
+.re-pop-menu button{padding:7px 10px;border:0;border-radius:7px;background:transparent;color:var(--text-primary);text-align:left;font:inherit;cursor:pointer}
+.re-pop-menu button:hover{background:var(--bg-panel)}
+.re-size-2{font-size:12px}.re-size-3{font-size:14px}.re-size-5{font-size:18px}.re-size-6{font-size:22px}
+.re-swatches{display:grid;grid-template-columns:repeat(5,24px);gap:6px}
+.re-swatch{width:24px;height:24px;border:1px solid var(--border-hover);border-radius:6px;cursor:pointer;padding:0}
+.re-swatch:hover{transform:scale(1.1)}
+.re-swatch.none{background:linear-gradient(135deg,transparent 45%,#d93025 45%,#d93025 55%,transparent 55%),var(--bg-surface)}
+.re-emojis{left:auto;right:0;display:grid;grid-template-columns:repeat(10,30px);gap:2px;max-height:220px;overflow:auto;width:max-content}
+.re-emojis button{width:30px;height:30px;border:0;border-radius:6px;background:transparent;font-size:18px;line-height:1;cursor:pointer}
+.re-emojis button:hover{background:var(--bg-panel)}
+.re-area{padding:12px 14px;border:1px solid var(--border-hover);border-radius:10px;background:var(--bg-surface);color:var(--text-primary);font-size:14px;line-height:1.55;overflow-wrap:anywhere;overflow:auto;max-height:52vh;cursor:text}
+.re-area:focus{outline:2px solid var(--border-focus);outline-offset:-1px;border-color:transparent}
+.re-area:empty::before{content:attr(data-placeholder);color:var(--text-tertiary,#8a94a6);pointer-events:none}
+.re-area p{margin:0 0 .8em}
+.re-area ul,.re-area ol,.pa-rich ul,.pa-rich ol{margin:.3em 0 .8em;padding-left:1.6em}
+.re-area blockquote,.pa-rich blockquote{margin:.3em 0 .8em .4em;padding-left:.9em;border-left:3px solid var(--border-hover);color:var(--text-secondary)}
+.re-area a,.pa-rich a{color:var(--accent-primary-text);text-decoration:underline}
+.re-area img,.pa-rich img{max-width:100%;height:auto;border-radius:6px}
+.re-area [data-signature]{color:var(--text-secondary)}
+.pa-message.pa-rich{white-space:normal}
+.pa-rich p{margin:0 0 .8em}
+
+/* Para / Cc / Cco with contact suggestions */
+.rf{display:grid;gap:6px}
+.rf label{margin-top:6px;font-size:12.5px;font-weight:600;color:var(--text-secondary)}
+.rf-input{position:relative;display:flex;align-items:center}
+.rf-input input{padding-right:84px}
+.rf-list{position:absolute;top:calc(100% + 4px);left:0;right:0;z-index:60;margin:0;padding:4px;list-style:none;border:1px solid var(--border-default);border-radius:10px;background:var(--bg-surface);box-shadow:0 12px 32px -12px #0b142455}
+.rf-list li{display:flex;flex-direction:column;padding:7px 10px;border-radius:7px;cursor:pointer}
+.rf-list li.on,.rf-list li:hover{background:var(--bg-panel)}
+.rf-list strong{font-size:13.5px;font-weight:600}
+.rf-list small{font-size:12px;color:var(--text-secondary)}
+.cm-cc-toggles{position:absolute;right:6px;display:inline-flex;gap:2px}
+.cm-cc-toggles button{padding:4px 8px;border:0;border-radius:6px;background:transparent;color:var(--text-secondary);font:inherit;font-size:13px;cursor:pointer}
+.cm-cc-toggles button:hover{background:var(--bg-panel);color:var(--text-primary)}
+
+/* Compose window: normal, full screen and minimized (like Gmail's bar at the bottom) */
+.cm-dialog.cm-compose{width:min(760px,100%)}
+.cm-window{display:inline-flex;gap:2px}
+.cm-backdrop-max{padding:12px}
+.cm-dialog.cm-compose.cm-max{width:100%;max-width:none;height:calc(100dvh - 24px);max-height:none}
+.cm-minibar{position:fixed;right:20px;bottom:0;z-index:1000;display:flex;align-items:center;gap:4px;width:min(340px,calc(100% - 40px));padding:6px 8px 6px 14px;border:1px solid var(--border-default);border-bottom:0;border-radius:12px 12px 0 0;background:var(--bg-surface);box-shadow:0 -8px 24px -12px #0b142455}
+.cm-minibar-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border:0;background:transparent;color:var(--text-primary);font:inherit;font-size:14px;font-weight:600;text-align:left;cursor:pointer;padding:6px 0}
+
+/* Ajustes → Firma */
+.st-group>.st-signature{border:1px solid var(--border-default);border-top:0;background:var(--bg-surface)}
+.st-signature{display:grid;gap:10px;padding:4px 18px 18px}
+.st-signature .re{margin-top:0}
+.st-signature-actions{display:flex;align-items:center;justify-content:flex-end;gap:12px}
+.st-signature-actions small{font-size:12.5px;color:var(--text-secondary);display:inline-flex;align-items:center;gap:5px}
+.st-saved svg{width:14px;height:14px;color:#0f7a55}
+
+/* Date and «Abrir en Gmail/Outlook» at the right of the sender */
+.mx-sender-side{align-self:flex-start;display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex-shrink:0}
+.mx-sender-side time{align-self:auto}
+.mx-open-web{display:inline-flex;align-items:center;gap:5px;padding:4px 9px;border:1px solid var(--border-default);border-radius:999px;font-size:12.5px;font-weight:600;color:var(--accent-primary-text);text-decoration:none;white-space:nowrap}
+.mx-open-web:hover{background:var(--bg-panel);border-color:var(--accent-primary)}
+.mx-open-web:focus-visible{outline:2px solid var(--accent-primary);outline-offset:2px}
+.mx-open-web svg{width:13px;height:13px}
+@media(max-width:700px){.mx-sender{flex-wrap:wrap}.mx-sender-side{flex-direction:row;align-items:center;width:100%;justify-content:space-between}}

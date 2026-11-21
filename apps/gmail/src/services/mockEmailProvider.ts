@@ -222,6 +222,12 @@ export class MockEmailService {
     });
   }
 
+  public markSpam(ids: string[]): void {
+    this.emails.forEach(e => {
+      if (ids.includes(e.id) && !e.labels.some(label => label.toLowerCase() === 'spam')) e.labels = [...e.labels, 'Spam'];
+    });
+  }
+
   public notSpam(ids: string[]): void {
     this.emails.forEach(e => {
       if (ids.includes(e.id)) e.labels = e.labels.filter(label => label.toLowerCase() !== 'spam');

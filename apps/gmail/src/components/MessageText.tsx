@@ -8,11 +8,11 @@ import type { ReactNode } from 'react';
 
 type Block =
   | { kind: 'heading'; text: string }
-  | { kind: 'list'; ordered: boolean; items: { text: string; sub: string[] }[] }
+  | { kind: 'list'; ordered: boolean; items: { text: string; sub: string[]; number?: number }[] }
   | { kind: 'paragraph'; lines: string[] };
 
 const BULLET = /^\s{0,3}(?:[•\-*·])\s+(.*)$/;
-const NUMBERED = /^\s{0,3}\d{1,2}[.)]\s+(.*)$/;
+const NUMBERED = /^\s{0,3}(\d{1,2})[.)]\s+(.*)$/;
 const HEADING = /^\s{0,3}#{1,4}\s+(.*)$/;
 /** A whole line in bold, such as "**Resumen de tu bandeja**", reads as a title. */
 const BOLD_LINE = /^\s*\*\*([^*]+)\*\*:?\s*$/;
@@ -32,23 +32,30 @@ function parse(text: string): Block[] {
   const blocks: Block[] = [];
   let paragraph: string[] | null = null;
   let list: Extract<Block, { kind: 'list' }> | null = null;
+  // A blank line between list items keeps the list ("1. …", blank, "2. …" is still one list); anything else ends it.
+  let blank = false;
   const close = () => { paragraph = null; list = null; };
 
   for (const raw of withoutIds(text).replace(/\r\n/g, '\n').split('\n')) {
-    if (!raw.trim()) { close(); continue; }
+    if (!raw.trim()) { paragraph = null; blank = true; continue; }
+    const afterBlank = blank;
+    blank = false;
     const heading = raw.match(HEADING)?.[1] ?? raw.match(BOLD_LINE)?.[1];
     if (heading && !MAIL_LINK.test(heading)) { close(); blocks.push({ kind: 'heading', text: heading.trim() }); continue; }
     MAIL_LINK.lastIndex = 0;
     const bullet = raw.match(BULLET)?.[1];
-    const numbered = bullet === undefined ? raw.match(NUMBERED)?.[1] : undefined;
+    const numberedMatch = bullet === undefined ? raw.match(NUMBERED) : null;
+    const numbered = numberedMatch?.[2];
     const item = bullet ?? numbered;
     if (item !== undefined) {
       const ordered = numbered !== undefined;
       if (!list || list.ordered !== ordered) { paragraph = null; list = { kind: 'list', ordered, items: [] }; blocks.push(list); }
-      list.items.push({ text: item, sub: [] });
+      // The number the model wrote is kept, so a "3." that follows a paragraph still reads 3.
+      list.items.push({ text: item, sub: [], number: numberedMatch ? Number(numberedMatch[1]) : undefined });
       continue;
     }
     if (list && SUB_LINE.test(raw)) { list.items[list.items.length - 1].sub.push(raw.trim()); continue; }
+    if (afterBlank) list = null;
     list = null;
     if (!paragraph) { paragraph = []; blocks.push({ kind: 'paragraph', lines: paragraph }); }
     paragraph.push(raw.trim());
@@ -97,7 +104,7 @@ export function MessageText({ text, onOpenMail }: { text: string; onOpenMail?: O
         return (
           <List key={index}>
             {block.items.map((item, i) => (
-              <li key={i}>
+              <li key={i} value={block.ordered ? item.number : undefined}>
                 <span>{inline(item.text)}</span>
                 {item.sub.map((sub, j) => <span key={j} className="md-sub">{inline(sub)}</span>)}
               </li>

@@ -1,7 +1,10 @@
+import { askConfirm, notify } from './ConfirmDialog';
 import { useEffect, useState } from 'react';
 import { LayoutDashboard, Settings, Mail, ShieldCheck, History, AlertTriangle, Sun, Moon, RefreshCw, Database, Lock, KeyRound, ExternalLink } from 'lucide-react';
 import type { Email } from '../types/email';
-import { fetchLlmHealth, type LlmHealth } from '../services/llmClient';
+import { fetchLlmHealth, PROVIDER_EVENT, type LlmHealth } from '../services/llmClient';
+import { ModelChoice, prettyModel } from './ModelPicker';
+import { SignatureSettings } from './SignatureSettings';
 import { mailProvider } from '../services/mailProvider';
 import { consentHistory, openPrivacyPolicy } from './PrivacyConsent';
 import { BusyButton } from './BusyButton';
@@ -9,9 +12,9 @@ import { MAIL, ACCOUNT, PLATFORM, MAIL_COUNT_OPTIONS } from '../services/platfor
 interface Props {view:'summary'|'settings';emails:Email[];pendingCount:number;logCount:number;theme:'dark'|'light';strictMode:boolean;onToggleTheme:()=>void;onToggleStrictMode:()=>void;onAuthorize:()=>void|Promise<void>;authorizing?:boolean;connected:boolean;mailCount:number;onMailCount:(value:number)=>void;storageStatus:string;storageReady:boolean;onEraseStorage:()=>void|Promise<void>}
 /** Chrome re-reads the extension from disk; the open mail tabs are refreshed afterwards by the background worker. */
 async function reloadExtension(){
-  if(!window.confirm('Se recargará NexoMail y esta pestaña del correo. Lo que estés escribiendo en ella sin guardar puede perderse. En las demás pestañas de Gmail y Outlook, NexoMail se vuelve a conectar sin recargarlas.\n\n¿Recargar ahora?'))return;
+  if(!(await askConfirm({title:'¿Recargar NexoMail ahora?',message:'Se recargará NexoMail y esta pestaña del correo. Lo que estés escribiendo en ella sin guardar puede perderse.\n\nEn las demás pestañas de Gmail y Outlook, NexoMail se vuelve a conectar sin recargarlas.',confirmLabel:'Recargar'})))return;
   try{await window.emailAgentHost.reloadExtension();await new Promise(()=>{});}
-  catch{window.alert('No se pudo recargar. Hazlo desde chrome://extensions.');}
+  catch{await notify('No se pudo recargar\n\nHazlo desde chrome://extensions.');}
 }
 /** Microsoft only accepts sign-ins that return to an address registered as a single-page application. */
 function MicrosoftRedirect(){
@@ -28,6 +31,8 @@ export function WorkspacePages(p:Props){
   const [health,setHealth]=useState<LlmHealth|null>(null);
   const [loading,setLoading]=useState(false);
   useEffect(()=>{let active=true;if(p.view==='settings'){setLoading(true);fetchLlmHealth().then(value=>{if(active){setHealth(value);setLoading(false);}});}return()=>{active=false;};},[p.view]);
+  // The status below follows the model chosen above (or in the chat footer).
+  useEffect(()=>{const onChange=()=>{void fetchLlmHealth().then(setHealth);};window.addEventListener(PROVIDER_EVENT,onChange);return()=>window.removeEventListener(PROVIDER_EVENT,onChange);},[]);
   async function refresh(){setLoading(true);try{setHealth(await fetchLlmHealth());}finally{setLoading(false);}}
   if(p.view==='summary')return <section className="workspace-page workspace-scroll"><div className="workspace-section-heading"><LayoutDashboard size={21}/><h2>Resumen general</h2></div><div className="workspace-page-body"><p className="workspace-muted">Estado de los correos cargados y de las acciones de esta sesión.</p><div className="workspace-stats">
     {[{icon:Mail,label:'Correos cargados',value:p.emails.length},{icon:Mail,label:'Sin leer',value:p.emails.filter(e=>!e.read).length},{icon:AlertTriangle,label:'Requieren aprobación',value:p.pendingCount},{icon:History,label:'Eventos de auditoría',value:p.logCount}].map((stat,index)=><article key={index} className="workspace-card workspace-stat"><stat.icon size={22}/><div><span>{stat.label}</span><strong>{stat.value}</strong></div></article>)}
@@ -43,8 +48,13 @@ export function WorkspacePages(p:Props){
       <label className="st-row st-clickable"><div className="st-text"><strong>Revisión estricta</strong><small>También pide aprobación para etiquetar correos.</small></div><input type="checkbox" role="switch" className="st-switch" checked={p.strictMode} onChange={p.onToggleStrictMode}/></label>
       <div className="st-row st-info"><span className="st-icon" aria-hidden="true"><ShieldCheck/></span><div className="st-text"><small>Enviar correos y moverlos a la papelera siempre requieren tu aprobación, con o sin revisión estricta.</small></div></div>
     </section>
+    <section className="st-group" aria-labelledby="st-compose"><h3 id="st-compose">Redacción</h3>
+      <SignatureSettings/>
+    </section>
     <section className="st-group" aria-labelledby="st-ai"><h3 id="st-ai">Asistente de IA</h3>
-      <dl className="st-facts"><div><dt>Proveedor</dt><dd>{loading?'Consultando…':health?.provider || 'No disponible'}</dd></div><div><dt>Modelo</dt><dd>{health?.model || 'Sin información'}</dd></div><div><dt>Estado</dt><dd><span className={`st-dot ${health?.configured?'ok':''}`} aria-hidden="true"/>{health?.configured?'Configurado':'Sin confirmar'}</dd></div></dl>
+      <div className="st-row st-model"><div className="st-text"><strong>Modelo de IA</strong><small>Se guarda para esta cuenta en este navegador. También puedes cambiarlo desde el nombre del modelo, abajo del chat.</small></div></div>
+      <ModelChoice/>
+      <dl className="st-facts"><div><dt>Proveedor</dt><dd>{loading?'Consultando…':health?.provider || 'No disponible'}</dd></div><div><dt>Modelo</dt><dd>{health?.model ? prettyModel(health.model) : 'Sin información'}</dd></div><div><dt>Estado</dt><dd><span className={`st-dot ${health?.configured?'ok':''}`} aria-hidden="true"/>{health?.configured?'Configurado':'Sin confirmar'}</dd></div></dl>
       <div className="st-row st-actions"><small>Consultar el estado no genera ninguna respuesta de IA. La conexión se comparte con {PLATFORM==='outlook'?'Gmail':'Outlook'}.</small><div><button type="button" className="pa-btn pa-btn-ghost" disabled={loading} onClick={refresh}><RefreshCw aria-hidden="true"/>{loading?'Actualizando…':'Actualizar'}</button><button type="button" className="pa-btn pa-btn-secondary" onClick={()=>window.emailAgentHost.openOptions()}>Opciones de la extensión</button></div></div>
     </section>
     <section className="st-group" aria-labelledby="st-data"><h3 id="st-data">Datos guardados</h3>

@@ -133,3 +133,11 @@ export function contactsMentioned(session: string, prompt: string, limit = 8): C
 }
 
 export const describeContact = (c: Contact) => `${c.name ? `${c.name} <${c.address}>` : c.address}${c.sent ? ` (le escribiste ${c.sent} ${c.sent === 1 ? 'vez' : 'veces'})` : ' (te escribió)'}`;
+
+/** People of one organization you have dealt with (the real one, to ask whether a suspicious message is theirs). */
+export function contactsAtDomain(session: string, domain: string, limit = 3): Contact[] {
+  const d = domain.toLowerCase().replace(/^www\./, '');
+  return Object.values(load(session).contacts).map(view)
+    .filter(c => { const host = c.address.split('@').pop() || ''; return host === d || host.endsWith('.' + d); })
+    .sort((a, b) => b.sent - a.sent || b.last - a.last).slice(0, limit);
+}

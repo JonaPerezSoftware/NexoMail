@@ -377,6 +377,7 @@ export function executeAgentTool(
           subject,
           body,
           emailIds: replyId ? [replyId] : [],
+          ...(replyEmail ? { replyToSender: replyEmail.sender } : {}),
           isReal: ctx.isReal,sessionKey:ctx.sessionKey,
         },
         `El agente preparó un envío real vía ${ctx.providerSource}. Edita y aprueba en Acciones Pendientes.`

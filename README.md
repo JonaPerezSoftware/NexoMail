@@ -48,7 +48,7 @@ Gmail y Outlook usan **exactamente la misma aplicación**. Solo cambia la pieza 
 | **Ajustes** | Cuenta conectada, tema claro u oscuro, revisión estricta, estado de la IA, datos guardados y permisos concedidos. |
 
 ### Agente de IA con dos motores
-- **IA (LLM):** Google Gemini u Ollama local, con *tool calling*. El modelo decide qué herramienta usar.
+- **IA (LLM):** Anthropic Claude (Claude Opus 5.5), Google Gemini u Ollama local, con *tool calling*. El modelo decide qué herramienta usar.
 - **Motor de reglas local:** se usa cuando no hay IA configurada o cuando la IA falla (por ejemplo, un error 503 por saturación). Así el asistente sigue funcionando.
 
 ### Herramientas del agente
@@ -83,7 +83,7 @@ flowchart TD
     MP -->|versión Outlook| MG[Microsoft Graph con MSAL y PKCE]
     UI --> Agent[Agente: IA o motor de reglas]
     Agent --> API[Servidor FastAPI en 127.0.0.1:8000]
-    API --> LLM[Gemini u Ollama]
+    API --> LLM[Claude, Gemini u Ollama]
     UI --> Store[Almacenamiento por cuenta]
     Store --> API
     API --> DB[(PostgreSQL)]
@@ -144,6 +144,7 @@ El código está en `apps/gmail/` y se compila dos veces con Vite:
 |---|---|
 | Gmail API | Leer y gestionar correo de Gmail |
 | Microsoft Graph | Leer y gestionar correo de Outlook y Hotmail |
+| Anthropic Claude | Modelo de IA en la nube (opcional, recomendado): SDK oficial `anthropic` |
 | Google Gemini | Modelo de IA en la nube (opcional) |
 | Ollama | Modelo de IA local (opcional) |
 | PostgreSQL 14 o superior | Persistencia (opcional) |
@@ -209,7 +210,7 @@ Nexo-Mail/
 | Node.js 24 | Compilar la interfaz (`RECOMPILAR.cmd`) |
 | Cuenta de Google Cloud con Gmail API | Conectar Gmail |
 | Registro de aplicación en Microsoft Entra | Conectar Outlook |
-| Clave de Gemini **u** Ollama instalado | Respuestas con IA (sin ellos se usa el motor de reglas) |
+| Clave de Anthropic, clave de Gemini **u** Ollama instalado | Respuestas con IA (sin ellos se usa el motor de reglas) |
 | PostgreSQL 14+ | Opcional: guardar chat, borradores e historial |
 
 ---
@@ -219,6 +220,9 @@ Nexo-Mail/
 ### 1. Preparar el servidor
 1. Ejecuta **`CONFIGURAR_SERVIDOR.cmd`**. Crea `backend/.venv`, instala las dependencias y genera `backend/.env` con una **clave de enlace** aleatoria. Si `.env` ya existe, no lo modifica.
 2. Edita **`backend/.env`**:
+   - **Claude:** `LLM_PROVIDER=anthropic` y `ANTHROPIC_API_KEY=<tu clave de platform.claude.com>`. Opcionales: `ANTHROPIC_MODEL` (por defecto `claude-opus-5-5`), `ANTHROPIC_EFFORT` (`low` por defecto; `medium` para peticiones más difíciles, a mayor costo) y `ANTHROPIC_MAX_TOKENS` (16000; incluye el razonamiento del modelo). `LLM_PROVIDER` es el modelo de fábrica: si tienes las dos claves (`ANTHROPIC_API_KEY` y `GEMINI_API_KEY`), puedes cambiar entre Claude y Gemini desde **Ajustes → Asistente de IA** o pulsando el nombre del modelo abajo del chat. La elección se guarda por cuenta en el navegador. El modelo de Gemini se toma de `GEMINI_MODEL` o, si está vacío, de `LLM_MODEL`. Con los dos, la respuesta aparece mientras se escribe.
+     - Con Claude, si el modelo rechaza una consulta por sus filtros de seguridad, la API la reintenta en otro modelo de Claude. Su razonamiento se conserva entre las vueltas de un mismo turno con herramientas, y las instrucciones y herramientas quedan en caché para abaratar esas vueltas. La respuesta aparece en el chat mientras Claude la escribe, y «Cómo lo resolvió» muestra cuánto tardó cada llamada y cuántos tokens leyó desde caché.
+     - Pruebas sin gastar créditos: `backend\.venv\Scripts\python.exe backend\tests\test_claude_provider.py`.
    - **Gemini:** `LLM_PROVIDER=gemini`, `LLM_MODEL=<modelo disponible en tu cuenta>`, `GEMINI_API_KEY=<tu clave>`.
    - **Ollama:** `LLM_PROVIDER=ollama`, `LLM_MODEL=<modelo descargado>`, `OLLAMA_URL=http://127.0.0.1:11434`.
    - Ajustes opcionales: `LLM_MESSAGE_LIMIT`, `LLM_MAX_OUTPUT_TOKENS` y `LLM_CONTEXT_CHARS`.
@@ -299,8 +303,21 @@ En **Acciones** revisa cada propuesta. Puedes **Editar** el destinatario, el asu
 - **Enviar** y **mover a la papelera** siempre requieren aprobación.
 - **Etiquetar** también la requiere si activas *Revisión estricta* en Ajustes.
 
+### Redactar como en Gmail
+La ventana **Nuevo correo** (y **Editar** en Acciones) usa un editor visual: lo que ves es lo que se envía.
+- **Formato:** negrita, cursiva, subrayado y tachado (Ctrl + B, I, U), tamaño de letra, color de texto y de resaltado, alineación, listas con viñetas y numeradas, sangría, cita, quitar formato, deshacer y rehacer.
+- **Imágenes dentro del texto:** con el botón de imagen, pegándolas (Ctrl + V) o arrastrándolas. Se envían incrustadas en el mensaje, como en Gmail, y cuentan para el límite de adjuntos.
+- **Emojis** desde la barra.
+- **Cc y Cco:** como en Gmail, con varias direcciones separadas por comas y sugerencias de tu libreta de contactos al escribir.
+- **Firma:** se configura en **Ajustes → Redacción** y se añade a cada correo nuevo y respuesta (puedes borrarla en cada uno). Se guarda por cuenta en este navegador.
+- **Ventana:** pantalla completa y minimizar a una barra abajo, para consultar otro correo mientras escribes.
+- **Seguridad:** todo el contenido pasa por un filtro que solo deja formato (sin scripts, formularios, imágenes remotas ni enlaces que no sean web o correo). Se envía en HTML con una copia en texto plano, que es la que leen la IA y los avisos de datos sensibles. Un correo sin formato se sigue enviando como texto plano.
+- **Borradores:** guardan el formato; las imágenes y los adjuntos no se guardan en borradores.
+
+**Al leer en la pestaña Correo:** las imágenes que vienen dentro del correo (por ejemplo, las que enviaste con NexoMail) se muestran directamente, porque forman parte del mensaje; las imágenes de internet siguen bloqueadas hasta que pulses «Mostrar imágenes». El botón **Abrir en Gmail / Abrir en Outlook**, junto a la fecha, abre ese mismo correo en la web del proveedor, en una pestaña nueva y con la cuenta correcta. Las fotos de perfil no se muestran: Gmail y Outlook no las entregan, y obtenerlas de otros servicios revelaría a quién te escribe; se usan las iniciales.
+
 ### Enlaces con texto propio
-Al escribir o editar un correo, selecciona un texto y pulsa **Insertar enlace** (o **Ctrl + K**): eliges el texto que se verá y la dirección a la que lleva. En el mensaje queda como `[texto](https://dirección)`, el mismo formato que puede usar la IA, y se envía en HTML con una copia en texto plano que muestra cada destino. Antes de aprobar, la tarjeta de Acciones muestra adónde lleva cada enlace y avisa si el texto aparenta otro sitio. Solo se admiten direcciones web (http y https).
+Al escribir o editar un correo, selecciona un texto y pulsa **Insertar enlace** (o **Ctrl + K**): eliges el texto que se verá y la dirección a la que lleva. La IA puede escribirlos como `[texto](https://dirección)`, y se envía en HTML con una copia en texto plano que muestra cada destino. Antes de aprobar, la tarjeta de Acciones muestra adónde lleva cada enlace y avisa si el texto aparenta otro sitio. Solo se admiten direcciones web (http y https).
 
 ### Adjuntos
 Se pueden adjuntar archivos desde el chat, al redactar o al editar una propuesta. El límite es de **20 MB** por mensaje en Gmail y **3 MB** en Outlook (límite de Graph para envíos directos). La IA solo ve los **nombres** de los archivos, nunca su contenido. Las **fotos de más de 1 MB** (JPG, PNG o WebP) se reducen automáticamente a un máximo de 2.000 px en JPEG de buena calidad, para que el correo se envíe mucho más rápido; junto al archivo se ve el cambio, por ejemplo «4,8 MB → 0,7 MB». Los PDF, documentos, GIF y fotos HEIC se envían tal cual.
@@ -323,7 +340,7 @@ La categoría manual tiene prioridad sobre la agrupación automática.
 - **Sin secretos en el navegador:**
   - Google y Microsoft se autorizan sin *Client Secret*. Microsoft usa PKCE.
   - Los tokens de acceso viven en el almacenamiento de **sesión** de la extensión.
-- **Claves de IA solo en el servidor:** `GEMINI_API_KEY` está únicamente en `backend/.env`.
+- **Claves de IA solo en el servidor:** `ANTHROPIC_API_KEY` y `GEMINI_API_KEY` están únicamente en `backend/.env`.
 - **Servidor cerrado al exterior:**
   - Escucha solo en `127.0.0.1`.
   - Acepta solo orígenes `chrome-extension://`.
@@ -356,6 +373,15 @@ Gmail y Outlook ya filtran spam y malware en sus servidores. NexoMail añade lo 
 | **Imita a tus contactos** | Un dominio parecido a una organización con la que sí tienes historial (`techpartner-pagos.com` frente a `techpartner.com`). | Alto |
 | **Hilo secuestrado** | Un «Re:» a una conversación tuya que llega desde un dominio que no participaba en ella. | Medio |
 | **Remitente nuevo** | Nota informativa con el primer correo de un dominio, o de una dirección en Gmail, Outlook y similares. Sube el riesgo solo si además pide dinero o datos. Se activa cuando el historial ya tiene al menos 30 correos. | 0 o bajo |
+| **Llamadas falsas** | «Se cobró $399, llama al 1-800-… para cancelar»: un teléfono junto con un cobro, una renovación, un pedido o soporte técnico. Si el remitente es un banco o una marca verificada, solo queda una nota. | Medio |
+| **Adjuntos por su contenido** | Al abrir un correo se revisan, en tu equipo, sus adjuntos de hasta 10 MB. Se detecta: un «PDF» o una «foto» que en realidad es un programa, archivos HTML con formulario de contraseña (páginas de inicio de sesión falsas), documentos de Office con macros, ZIP con programas dentro o protegidos con una contraseña que viene en el mismo correo, y PDF que ejecutan código. Nunca se abren ni se ejecutan. | Bajo a alto |
+| **Códigos QR** | Las imágenes adjuntas se revisan en busca de códigos QR (*quishing*). Su destino se muestra y se revisa como cualquier enlace. | Medio o alto |
+
+**Protección de lo que envías:**
+- **Antes de aprobar un envío** se avisa si contiene números de tarjeta (comprobados con el algoritmo de Luhn), cédulas ecuatorianas válidas, contraseñas, códigos de verificación, números de cuenta o frases semilla. Al pulsar Enviar, pide confirmación. Solo avisa: no bloquea.
+- **Respuesta a otra organización:** si respondes a una dirección de otro dominio distinto del remitente original (el truco de la «dirección de respuesta»), se avisa.
+- **Reportar como spam:** en los correos peligrosos, y en «Más» para cualquier correo, mueve el mensaje a No deseado de Gmail u Outlook para que aprendan a filtrarlo. Se deshace con «No es spam».
+- **Verificar por otro canal:** en los correos con avisos, el asistente redacta un mensaje para la organización real (un contacto tuyo de ese dominio, o la dirección que le indiques), nunca para quien te escribió, preguntando si el correo es suyo. Queda en Acciones hasta que lo apruebes.
 
 **Historial de remitentes:** se guarda solo en este navegador (`localStorage`), por cuenta, y contiene únicamente dominios, direcciones e identificadores de mensajes, nunca asuntos ni contenido. Una vez al día se leen los 25 últimos enviados para saber quiénes son tus contactos.
 
@@ -428,17 +454,17 @@ Si solo cambias archivos de `extension/` (por ejemplo `options.html` o `content.
 node apps/gmail/tests/security.test.mjs
 ```
 
-La libreta de contactos tiene sus propias 15 pruebas: `node apps/gmail/tests/contacts.test.mjs`. Los enlaces con texto propio tienen 10: `node apps/gmail/tests/links.test.mjs`.
+La libreta de contactos tiene sus propias 15 pruebas: `node apps/gmail/tests/contacts.test.mjs`. Las fases 3 y 4 de seguridad (datos sensibles al enviar, respuestas desviadas, llamadas falsas, contenido de los adjuntos y falsos avisos de enlaces, dominios de Microsoft por país y correos propios) tienen 45: `node apps/gmail/tests/security-phase34.test.mjs`. Los enlaces con texto propio tienen 10: `node apps/gmail/tests/links.test.mjs`.
 
 Son 49 comprobaciones de la verificación del remitente, las imitaciones, el fraude de cambio de cuenta, las instrucciones para la IA y el historial de remitentes. No necesitan servidor ni conexión.
 
-Los casos de enlaces necesitan analizar HTML real, así que tienen otras 14 pruebas que se ejecutan en el navegador:
+Los casos de enlaces necesitan analizar HTML real, así que tienen otras 17 pruebas, incluida la lectura de códigos QR, que se ejecutan en el navegador:
 
 ```bash
 cd apps/gmail && npx vite
 ```
 
-Después abre `http://localhost:5173/tests/security.browser.html`. La página muestra «TODO OK» o la lista de fallos. Cubre el destino declarado, el caso de un boletín legítimo con intermediario propio, phishing con el mismo patrón de enlace y los casos anteriores que no deben cambiar.
+Después abre `http://localhost:5173/tests/security.browser.html`. La página muestra «TODO OK» o la lista de fallos. El editor tiene su propia página, `http://localhost:5173/tests/compose.browser.html` (30 pruebas): el filtro de HTML, la copia en texto plano, las imágenes en línea (al enviar y al leer), los borradores y el mensaje exacto que se enviaría por Gmail y por Outlook, sin enviar nada. Cubre el destino declarado, el caso de un boletín legítimo con intermediario propio, phishing con el mismo patrón de enlace y los casos anteriores que no deben cambiar.
 
 ### Compilar a mano
 ```bash
@@ -488,7 +514,7 @@ Implementa la interfaz `MailProvider` de `apps/gmail/src/services/mailProvider.t
 - Outlook admite como máximo 3 MB de adjuntos por mensaje.
 - No hay aviso automático de correos rebotados en Outlook ni paginación «Cargar más».
 - El correo seleccionado en la página de Gmail u Outlook no se sincroniza con el panel: se elige dentro de NexoMail.
-- Los adjuntos se revisan por su nombre, no por su contenido. Tampoco se leen códigos QR ni se consultan listas externas de sitios maliciosos.
+- Los adjuntos de más de 10 MB solo se revisan por su nombre, y los archivos RAR y 7z no se abren. Los códigos QR se buscan en imágenes adjuntas, no en imágenes remotas ni dentro de PDF. No se consultan listas externas de sitios maliciosos.
 - Si un buzón de Outlook no permite pedir las cabeceras en la lista de correos, NexoMail sigue funcionando sin la verificación del remitente.
 
 ---
@@ -508,4 +534,4 @@ Implementa la interfaz `MailProvider` de `apps/gmail/src/services/mailProvider.t
 
 **Marlon Aguiño** · **Jonathan Pérez**. Proyecto de tesis.
 
-Las licencias de terceros incluidas en el paquete están en [`extension/licenses/`](extension/licenses/): React, React DOM, Lucide, MSAL Browser e Inter.
+Las licencias de terceros incluidas en el paquete están en [`extension/licenses/`](extension/licenses/): React, React DOM, Lucide, MSAL Browser, jsQR (lectura de códigos QR, Apache-2.0) e Inter.

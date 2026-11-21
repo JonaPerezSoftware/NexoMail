@@ -1,7 +1,17 @@
+import { askConfirm } from './ConfirmDialog';
 import { useEffect, useState } from 'react';
 import { Download, Eye, FileText, Image as ImageIcon, Loader2, Paperclip, ShieldAlert, X } from 'lucide-react';
 import type { Email, MailAttachment } from '../types/email';
 import { formatSize } from '../services/mailFiles';
+import { scanAttachment, type AttachmentFinding } from '@shared/mail/attachment-scan';
+import { checkLink } from '@shared/mail/mail-insights';
+import { readQr } from '../services/qrScan';
+
+/** Attachments up to this size are checked automatically when the message is opened. */
+const SCAN_BYTES = 10 * 1024 * 1024;
+/** What the content check found for one attachment. */
+interface Scan { state: 'scanning' | 'done' | 'skipped'; findings: AttachmentFinding[]; qr?: string }
+const scans = new Map<string, Scan>();
 
 /** Only bitmap images are shown inside the app; SVG and HTML could run code and are only downloaded. */
 const PREVIEWABLE = /^image\/(?:jpeg|png|gif|webp|bmp)$/i;
@@ -20,9 +30,11 @@ interface Props {
   risky: boolean;
   onList: (email: Email) => Promise<MailAttachment[]>;
   onDownload: (email: Email, attachment: MailAttachment) => Promise<Blob>;
+  /** Content findings (disguised programs, fake sign-in pages, QR codes…), added to the message's analysis. */
+  onFindings?: (email: Email, findings: AttachmentFinding[]) => void;
 }
 
-export function MailAttachments({ email, risky, onList, onDownload }: Props) {
+export function MailAttachments({ email, risky, onList, onDownload, onFindings }: Props) {
   const [items, setItems] = useState<MailAttachment[] | null>(email.attachments ?? null);
   const [listError, setListError] = useState('');
   const [working, setWorking] = useState<{ id: string; what: 'view' | 'save' } | null>(null);
@@ -42,6 +54,51 @@ export function MailAttachments({ email, risky, onList, onDownload }: Props) {
   // Keyed by message: marking it as read must not list its attachments again.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [email.id, email.hasAttachments, onList]);
+
+  // Phase 3: when the message is opened, each attachment (up to 10 MB) is checked on this device: what it really
+  // is, sign-in forms, macros, ZIP contents, PDF scripts and QR codes. Nothing is opened or run.
+  const [scanState, setScanState] = useState<Record<string, Scan>>({});
+  useEffect(() => {
+    if (!items?.length) return;
+    let active = true;
+    (async () => {
+      const all: AttachmentFinding[] = [];
+      for (const attachment of items) {
+        const key = cacheKey(email, attachment);
+        let scan = scans.get(key);
+        if (!scan) {
+          if (attachment.unsupported || !attachment.size || attachment.size > SCAN_BYTES) scan = { state: 'skipped', findings: [] };
+          else {
+            if (active) setScanState(prev => ({ ...prev, [attachment.id]: { state: 'scanning', findings: [] } }));
+            try {
+              const blob = await blobOf(attachment);
+              const bytes = new Uint8Array(await blob.arrayBuffer());
+              const findings = scanAttachment(attachment.name, bytes, email.body);
+              let qr: string | undefined;
+              if (/^image\//i.test(attachment.type) || /\.(png|jpe?g|gif|webp|bmp)$/i.test(attachment.name)) {
+                qr = (await readQr(blob)) ?? undefined;
+                if (qr) {
+                  const check = /^(https?:\/\/|www\.)/i.test(qr) ? checkLink(qr) : null;
+                  const bad = check?.findings.filter(f => f.weight > 0) ?? [];
+                  findings.push(check?.url
+                    ? { reason: `La imagen «${attachment.name}» tiene un código QR que lleva a ${check.domain}.${bad.length ? ' ' + bad.map(f => f.reason).join(' ') : ''} Los QR en correos se usan para esquivar los filtros: no lo escanees con el móvil si no esperabas este correo.`, weight: Math.max(2, ...bad.map(f => f.weight)) }
+                    : { reason: `La imagen «${attachment.name}» tiene un código QR: ${qr.slice(0, 80)}`, weight: 1 });
+                }
+              }
+              scan = { state: 'done', findings, qr };
+            } catch { scan = { state: 'skipped', findings: [] }; }
+          }
+          scans.set(key, scan);
+        }
+        all.push(...scan.findings);
+        if (active) setScanState(prev => ({ ...prev, [attachment.id]: scan! }));
+      }
+      if (active && all.length) onFindings?.(email, all);
+    })();
+    return () => { active = false; };
+  // Once per message; downloads are cached, so reopening it does not download again.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, email.id]);
 
   useEffect(() => () => { if (preview) URL.revokeObjectURL(preview.url); }, [preview]);
   useEffect(() => {
@@ -68,10 +125,11 @@ export function MailAttachments({ email, risky, onList, onDownload }: Props) {
     if (what === 'save') {
       const warnings = [
         DANGEROUS.test(attachment.name) ? 'Este tipo de archivo puede ejecutar programas en tu equipo. Ábrelo solo si confías en el remitente y lo esperabas.' : '',
+        ...(scanState[attachment.id]?.findings.filter(f => f.weight >= 2).map(f => f.reason) ?? []),
         risky ? 'Este correo tiene señales de riesgo.' : '',
         attachment.size > LARGE_BYTES ? `El archivo pesa ${formatSize(attachment.size)} y puede tardar en descargarse.` : '',
       ].filter(Boolean);
-      if (warnings.length && !confirm(`${warnings.join('\n\n')}\n\n¿Descargar «${attachment.name}»?`)) return;
+      if (warnings.length && !(await askConfirm({ title: `¿Descargar «${attachment.name}»?`, items: warnings, confirmLabel: 'Descargar', danger: warnings.length > 1 || DANGEROUS.test(attachment.name) }))) return;
     }
     setWorking({ id: attachment.id, what }); setError('');
     try {
@@ -96,7 +154,9 @@ export function MailAttachments({ email, risky, onList, onDownload }: Props) {
       <ul className="att-list">
         {items.map((attachment) => {
           const image = PREVIEWABLE.test(attachment.type);
-          const dangerous = DANGEROUS.test(attachment.name);
+          const scan = scanState[attachment.id];
+          const contentDanger = !!scan?.findings.some(f => f.weight >= 4);
+          const dangerous = DANGEROUS.test(attachment.name) || contentDanger;
           const busy = working?.id === attachment.id;
           return (
             <li key={attachment.id} className={`att-item${dangerous ? ' att-danger' : ''}`}>
@@ -109,6 +169,9 @@ export function MailAttachments({ email, risky, onList, onDownload }: Props) {
                   {!dangerous && ARCHIVE.test(attachment.name) && ' · Archivo comprimido: revisa su contenido'}
                   {attachment.unsupported && ' · Elemento de Outlook, no descargable'}
                 </small>
+                {scan?.state === 'scanning' && <small className="att-scan"><Loader2 aria-hidden="true" className="spin" />Revisando su contenido…</small>}
+                {scan?.state === 'done' && !scan.findings.length && <small className="att-scan att-scan-ok">Contenido revisado: es lo que dice ser.</small>}
+                {scan?.findings.map(f => <small key={f.reason} className={`att-scan ${f.weight >= 4 ? 'att-scan-danger' : 'att-scan-warn'}`}>{f.reason}</small>)}
               </span>
               {image && !attachment.unsupported && (
                 <button type="button" className="pa-btn pa-btn-ghost att-btn" disabled={!!working} onClick={() => void run(attachment, 'view')}>
@@ -125,7 +188,7 @@ export function MailAttachments({ email, risky, onList, onDownload }: Props) {
         })}
       </ul>
       {error && <p className="att-error" role="alert">{error}</p>}
-      <p className="att-note">Los adjuntos se descargan solo cuando lo pides. NexoMail nunca los abre ni los ejecuta.</p>
+      <p className="att-note">NexoMail revisa en tu equipo el contenido de los adjuntos de hasta 10 MB (qué son en realidad, formularios, macros, archivos comprimidos y códigos QR). Nunca los abre ni los ejecuta, y solo se guardan en tu equipo cuando pulsas Descargar.</p>
       {preview && (
         <div className="att-viewer" role="dialog" aria-modal="true" aria-label={preview.name} onClick={() => setPreview(null)}>
           <div className="att-viewer-bar" onClick={(event) => event.stopPropagation()}>

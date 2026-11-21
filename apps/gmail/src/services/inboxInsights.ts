@@ -56,6 +56,9 @@ export function wantsLatestFromPerson(prompt: string): boolean {
 
 export function detectInsightRequest(prompt: string): InsightRequest | null {
   const text = normalizeText(prompt);
+  // A request to write something («escribe a la organización… del correo sospechoso») is not a question about the
+  // inbox, even if it names a suspicious mail: it goes to the assistant.
+  if (/\b(?:redacta\w*|escribe|escribele\w*|responde|respondele\w*|contesta|contestale\w*|envia|enviale\w*|manda|mandale\w*|prepara\w*)\b/.test(text)) return null;
   if (/\b(?:sospechos\w*|phishing|fraude\w*|estafa\w*|peligros\w*|malicios\w*|riesgos?)\b/.test(text)) return 'risks';
   if (/\b(?:por|sin) (?:responder|contestar)\b|\b(?:esperando|espera|esperan|pendientes?|necesitan?|requieren?)\b.{0,40}\b(?:respuesta|responder|contestar)\b/.test(text)) return 'awaiting';
   if (/\bresumen del dia\b|\bponme al dia\b|\bque hay de nuevo\b|\bresumen de (?:mi|la) bandeja\b/.test(text)) return 'briefing';

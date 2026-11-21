@@ -12,6 +12,7 @@
   "dependencies": {
     "@azure/msal-browser": "^3.25.0",
     "@fontsource-variable/inter": "^5.2.5",
+    "jsqr": "1.4.0",
     "lucide-react": "^1.47.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"

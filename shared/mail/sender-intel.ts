@@ -18,14 +18,18 @@ export interface SenderAuth {
 export interface MailHeader { name: string; value: string; }
 
 /** Two-level public suffixes common in the region and in business mail; enough to find the registrable name. */
-const TWO_LEVEL = new Set(['com.ec','edu.ec','gob.ec','org.ec','net.ec','fin.ec','com.co','edu.co','gov.co','com.mx','edu.mx','gob.mx','com.pe','edu.pe','gob.pe','com.ar','edu.ar','gob.ar','com.br','gov.br','co.uk','ac.uk','gov.uk','com.au','co.jp','com.es','gob.es','com.ve','com.bo','com.py','com.uy','cl','com.cl']);
+const TWO_LEVEL = new Set(['com.ec','edu.ec','gob.ec','org.ec','net.ec','fin.ec','com.co','edu.co','gov.co','com.mx','edu.mx','gob.mx','com.pe','edu.pe','gob.pe','com.ar','edu.ar','gob.ar','com.br','gov.br','co.uk','ac.uk','gov.uk','com.au','co.jp','com.es','gob.es','com.ve','com.bo','com.py','com.uy','cl','com.cl','com.tr','com.vn','co.il','co.nz','co.th','co.id','co.za','co.kr','com.sg','com.my','com.ph']);
+
+/** Hosting services where anyone can publish under their name: evil.github.io is not github.io. */
+const SHARED_HOSTS = new Set(['github.io','gitlab.io','blogspot.com','web.app','firebaseapp.com','netlify.app','vercel.app','herokuapp.com','azurewebsites.net','pages.dev','workers.dev','wixsite.com','weebly.com','glitch.me','onrender.com','repl.co','000webhostapp.com','ngrok.io','ngrok-free.app','s3.amazonaws.com','cloudfront.net','appspot.com','sharepoint.com','myshopify.com']);
 
 /** example.com.ec → example.com.ec; mail.example.com → example.com. */
 export function registrableDomain(domain: string): string {
   const parts = domain.toLowerCase().replace(/\.$/, '').split('.').filter(Boolean);
   if (parts.length <= 2) return parts.join('.');
   const lastTwo = parts.slice(-2).join('.');
-  return TWO_LEVEL.has(lastTwo) ? parts.slice(-3).join('.') : lastTwo;
+  if (parts.length >= 4 && SHARED_HOSTS.has(parts.slice(-3).join('.'))) return parts.slice(-4).join('.');
+  return TWO_LEVEL.has(lastTwo) || SHARED_HOSTS.has(lastTwo) ? parts.slice(-3).join('.') : lastTwo;
 }
 /** The name part of a registrable domain: "pichincha" for pichincha.com and banco.pichincha.com.ec → "pichincha". */
 export function baseName(domain: string): string {
@@ -76,6 +80,13 @@ export function senderAuthentication(headers: MailHeader[] | undefined, senderAd
  * normal; the same mismatch from an unverified sender is not.
  */
 const TRACKERS = ['api-engage.com','exacttarget.com','sfmc-content.com','list-manage.com','mailchimp.com','mcusercontent.com','sendgrid.net','sendgrid.com','ct.sendgrid.net','mandrillapp.com','mailgun.org','mailgun.net','sparkpostmail.com','hubspotlinks.com','hs-sites.com','hubspotemail.net','mktotracking.com','mkto-','marketo.com','constantcontact.com','rs6.net','cmail19.com','cmail20.com','createsend.com','awstrack.me','amazonses.com','sendibt3.com','sendinblue.com','brevo.com','emltrk.com','mailjet.com','mjt.lu','click.e.','links.e.','email.','trk.','clicks.','go.pardot.com','pardot.com','eloqua.com','en25.com','klclick.com','klaviyo.com','moengage.com','braze.com','iterable.com','customer.io','sailthru.com','epsilon.com','acoustic.com','emarsys.net','cheetahmail.com','responsys.net','bluecore.com','urlgeni.us','doubleclick.net','clicks.mlsend.com','mlsend.com','safelinks.protection.outlook.com'];
+/** Short-link services that belong to one company: a link through them is that company's own. */
+const OWN_REDIRECTORS: Record<string, string> = { 'c.gle': 'google.com', 'g.co': 'google.com', 'goo.gle': 'google.com', 'aka.ms': 'microsoft.com', 'lnkd.in': 'linkedin.com', 'amzn.to': 'amazon.com', 'a.co': 'amazon.com' };
+export function redirectorOwner(domain: string): string | null {
+  const d = domain.toLowerCase();
+  return OWN_REDIRECTORS[d] ?? null;
+}
+
 export function isTrackingDomain(domain: string): boolean {
   const d = domain.toLowerCase();
   return TRACKERS.some(t => t.endsWith('.') || t.endsWith('-') ? d.startsWith(t) || d.includes('.' + t) : d === t || d.endsWith('.' + t));
@@ -83,8 +94,9 @@ export function isTrackingDomain(domain: string): boolean {
 
 /** Brands commonly imitated in phishing, with their real domains. */
 export const KNOWN_BRANDS: { name: string; domains: string[] }[] = [
-  { name: 'Google', domains: ['google.com', 'gmail.com', 'youtube.com'] },
-  { name: 'Microsoft', domains: ['microsoft.com', 'live.com', 'outlook.com', 'office.com', 'microsoftonline.com', 'hotmail.com'] },
+  { name: 'Google', domains: ['google.com', 'gmail.com', 'googlemail.com', 'youtube.com'] },
+  // Microsoft's free mail exists under many country endings (outlook.es, hotmail.co.uk, live.com.mx…): all are real.
+  { name: 'Microsoft', domains: ['microsoft.com', 'office.com', 'microsoftonline.com', 'msn.com', 'passport.com', 'windowslive.com', 'outlook.com', 'outlook.es', 'outlook.fr', 'outlook.de', 'outlook.it', 'outlook.pt', 'outlook.nl', 'outlook.be', 'outlook.at', 'outlook.ch', 'outlook.ie', 'outlook.dk', 'outlook.se', 'outlook.no', 'outlook.fi', 'outlook.pl', 'outlook.cz', 'outlook.sk', 'outlook.hu', 'outlook.gr', 'outlook.ro', 'outlook.jp', 'outlook.kr', 'outlook.in', 'outlook.sg', 'outlook.my', 'outlook.ph', 'outlook.sa', 'outlook.cl', 'outlook.co', 'outlook.pe', 'outlook.ec', 'outlook.ca', 'outlook.com.ar', 'outlook.com.br', 'outlook.com.mx', 'outlook.com.au', 'outlook.com.tr', 'outlook.com.vn', 'outlook.co.uk', 'outlook.co.il', 'outlook.co.nz', 'outlook.co.th', 'outlook.co.id', 'outlook.co.za', 'outlook.com.pe', 'outlook.com.co', 'outlook.com.ec', 'hotmail.com', 'hotmail.es', 'hotmail.fr', 'hotmail.de', 'hotmail.it', 'hotmail.pt', 'hotmail.nl', 'hotmail.be', 'hotmail.at', 'hotmail.ch', 'hotmail.ie', 'hotmail.dk', 'hotmail.se', 'hotmail.no', 'hotmail.fi', 'hotmail.pl', 'hotmail.cz', 'hotmail.sk', 'hotmail.hu', 'hotmail.gr', 'hotmail.ro', 'hotmail.jp', 'hotmail.kr', 'hotmail.in', 'hotmail.sg', 'hotmail.my', 'hotmail.ph', 'hotmail.sa', 'hotmail.cl', 'hotmail.co', 'hotmail.pe', 'hotmail.ec', 'hotmail.ca', 'hotmail.com.ar', 'hotmail.com.br', 'hotmail.com.mx', 'hotmail.com.au', 'hotmail.com.tr', 'hotmail.com.vn', 'hotmail.co.uk', 'hotmail.co.il', 'hotmail.co.nz', 'hotmail.co.th', 'hotmail.co.id', 'hotmail.co.za', 'hotmail.com.pe', 'hotmail.com.co', 'hotmail.com.ec', 'live.com', 'live.es', 'live.fr', 'live.de', 'live.it', 'live.pt', 'live.nl', 'live.be', 'live.at', 'live.ch', 'live.ie', 'live.dk', 'live.se', 'live.no', 'live.fi', 'live.pl', 'live.cz', 'live.sk', 'live.hu', 'live.gr', 'live.ro', 'live.jp', 'live.kr', 'live.in', 'live.sg', 'live.my', 'live.ph', 'live.sa', 'live.cl', 'live.co', 'live.pe', 'live.ec', 'live.ca', 'live.com.ar', 'live.com.br', 'live.com.mx', 'live.com.au', 'live.com.tr', 'live.com.vn', 'live.co.uk', 'live.co.il', 'live.co.nz', 'live.co.th', 'live.co.id', 'live.co.za', 'live.com.pe', 'live.com.co', 'live.com.ec'] },
   { name: 'PayPal', domains: ['paypal.com'] },
   { name: 'Apple', domains: ['apple.com', 'icloud.com'] },
   { name: 'Amazon', domains: ['amazon.com', 'amazon.es'] },

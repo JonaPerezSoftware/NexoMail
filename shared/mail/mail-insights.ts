@@ -1,6 +1,6 @@
 /** Local, deterministic analysis. Never fetches URLs, executes HTML or calls an LLM.
  */
-import { type SenderAuth, isTrackingDomain, findLookalike, KNOWN_BRANDS, sameOrganization, baseName } from './sender-intel';
+import { type SenderAuth, isTrackingDomain, findLookalike, KNOWN_BRANDS, sameOrganization, baseName, redirectorOwner } from './sender-intel';
 export type MailCategory = 'Trabajo'|'Personal'|'Importante'|'Finanzas'|'Boletines';
 export interface MailInput {
   subject: string; sender: string; senderName?: string; text: string;
@@ -34,6 +34,15 @@ export const MISMATCH_WITH_DECEIT='Además de un enlace que no lleva al sitio qu
 
 /** Context that changes how a link is judged: a verified sender linking through its own click tracker is normal. */
 export interface LinkContext { senderDomain?: string; verified?: boolean; /** Verified sender that has written to this account several times. */ knownSender?: boolean; }
+
+/**
+ * A message the account itself sent is not checked as a possible fraud: you wrote it. Its sender verification is
+ * also absent by nature (the receiving server checks it, not yours). The categories stay; warnings are cleared.
+ */
+export function ownMessageInsights(insights:MailInsights):MailInsights{
+  return {...insights,level:'none',label:'Enviado por ti',reasons:[],score:0,weights:{},sender:undefined,aiInjection:false,
+    notes:['Lo enviaste tú desde esta cuenta: no se analiza como posible fraude.']};
+}
 
 /** Adds a warning to an existing analysis and recomputes its level (used for checks that need the mailbox history). */
 export function addFinding(insights:MailInsights,reason:string,weight:number):MailInsights{
@@ -97,6 +106,15 @@ export function declaredTarget(url:URL):URL|null{
  * Checks one link on this device, without visiting it: where it really goes and whether its
  * address or visible text tries to deceive. It does not consult lists of known malicious sites.
  */
+/** Common domain endings, plus any two-letter country ending that is not also a usual file or code extension. */
+const COMMON_TLDS=new Set('com net org edu gov mil int info biz name pro coop aero museum mobi app dev io ai co me tv xyz online site store shop tech cloud email link click live news blog page top club world space website digital group agency bank finance money pay global solutions services support center company today life'.split(' '));
+const NOT_TLDS=new Set('js ts md py sh rs cs go rb pl pm db gz h c cc cpp vb ps cf'.split(' '));
+function looksLikeDomain(text:string):boolean{
+  const tld=text.toLowerCase().split('.').pop() || '';
+  if(COMMON_TLDS.has(tld))return true;
+  return /^[a-z]{2}$/.test(tld) && !NOT_TLDS.has(tld);
+}
+
 export function checkLink(raw:string,visibleText='',context:LinkContext={}):LinkCheck{
   const trimmed=raw.trim();
   const expanded=trimmed.startsWith('//')?'https:'+trimmed:/^www\./i.test(trimmed)?'https://'+trimmed:trimmed;
@@ -117,9 +135,15 @@ export function checkLink(raw:string,visibleText='',context:LinkContext={}):Link
   if(/[​-‏‪-‮⁦-⁩]/.test(trimmed))issue('El enlace contiene caracteres invisibles o de dirección de texto.',3,'suspicious');
   const target=declaredTarget(url);
   const declared=target?.hostname.toLowerCase() || '';
-  const displayed=visibleText.trim().match(/^(?:https?:\/\/|www\.)[^\s]+$/i)?.[0] ?? visibleText.trim().match(/^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/\S*)?$/i)?.[0];
+  // Punctuation after a written address («visita www.banco.com,») is part of the sentence, not of the address.
+  const shown=visibleText.trim().replace(/[.,;:!?)\]}»"'’]+$/,'');
+  const bare=shown.match(/^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/\S*)?$/i)?.[0];
+  // Without http:// or www., the text only counts as an address when it ends in a real domain ending:
+  // «permissions.blockWritesOutsideWorkingDirectories» or «config.json» are names, not sites.
+  const displayed=shown.match(/^(?:https?:\/\/|www\.)[^\s]+$/i)?.[0] ?? (bare && looksLikeDomain(bare.split('/')[0]) ? bare : undefined);
   if(displayed){const visibleHost=host(/^https?:\/\//i.test(displayed)?displayed:'https://'+displayed);
-    if(visibleHost && !related(visibleHost,domain)){
+    // Another subdomain of the same registered domain (www.x.com → data.a.x.com) is the same organization.
+    if(visibleHost && !related(visibleHost,domain) && !sameOrganization(visibleHost,domain)){
       const sender=context.verified?context.senderDomain || '':'';
       const ownText=!!sender && sameOrganization(visibleHost,sender);
       // The redirector belongs to the verified sender (its own domain or a known click counter): only then is its declared destination believed.
@@ -128,6 +152,7 @@ export function checkLink(raw:string,visibleText='',context:LinkContext={}):Link
       if(ownText)issue('Enlace de seguimiento de clics: muestra '+visibleHost+' y pasa por '+domain+(isTrackingDomain(domain)?'':' (servicio del propio remitente)')+'. Es habitual en correos masivos y el remitente está verificado.',0);
       else if(ownRedirector && declaredMatches)issue('Enlace de seguimiento: pasa por '+domain+', del remitente verificado, y lleva a '+declared+', como muestra el texto.',0);
       else if(!!sender && context.knownSender && sameOrganization(domain,sender))issue('Enlace de seguimiento de '+domain+': el remitente está verificado y ya te ha escrito antes.',0);
+      else if(!!sender && !declared && !!redirectorOwner(domain) && sameOrganization(redirectorOwner(domain)!,sender))issue('Enlace corto de '+domain+', servicio propio de '+sender+' (remitente verificado), que muestra '+visibleHost+'.',0);
       else if(declared && !declaredMatches)issue('El texto muestra '+visibleHost+', pero el enlace declara llevar a '+declared+'.',4);
       else issue('El texto muestra '+visibleHost+', pero el enlace lleva a '+domain+(declaredMatches?' (dice ir a '+declared+', pero no se puede confirmar)':'')+'.',2,'mismatch');
     }
@@ -226,6 +251,16 @@ export function analyzeMail(input:MailInput):MailInsights {
   if(/\b(gana|ganaste|premio|loteria|lottery|winner)\b/.test(subject) && /\b(paga|pago|tarjeta|transferencia|deposito|fee|payment)\b/.test(hay))signal('Ofrece un premio y solicita un pago o información financiera.',3);
   if(input.replyTo && input.sender){const from=input.sender.split('@').pop()?.toLowerCase(),reply=input.replyTo.split('@').pop()?.toLowerCase();
     if(from && reply && !related(from,reply))warn('La dirección de respuesta pertenece a un dominio distinto al remitente. Puede ser legítimo; verifícalo.',1);}
+  // Callback phishing: «we charged $399, call 1-800-… to cancel». No links, so filters let it through; the scam
+  // happens on the phone. A phone number + a call to action + a charge, renewal, refund or support story.
+  const phone=/(?:\+?\d{1,3}[\s.-]?)?(?:\(\d{2,4}\)|\d{2,4})[\s.-]?\d{3,4}[\s.-]?\d{3,4}\b|\b1[\s.-]?8\d{2}[\s.-]?\d{3}[\s.-]?\d{3,4}\b/;
+  const callToAction=/\b(llama|llamanos|llame|llamar|marca|comunicate|comuniquese|contacta|contactanos|contacte|call|dial|phone us|contact us|reach us)\b/;
+  const story=/\b(cargo|cobro|cobrado|cobramos|debitado|factura|renovacion|renovado|suscripcion|reembolso|cancelar|cancelacion|pedido|compra no autorizada|soporte tecnico|antivirus|norton|mcafee|geek squad|charged|charge|renewal|renewed|subscription|refund|cancel|invoice|order|unauthorized|tech support)\b/;
+  // A verified bank or brand writing «si no reconoces este cargo, llama a…» is normal: only a note then.
+  const officialSender=verified && KNOWN_BRANDS.some(brand=>brand.domains.some(d=>sameOrganization(d,senderDomain)));
+  if(phone.test(text) && callToAction.test(hay) && story.test(hay) && officialSender)notes.push('Incluye un teléfono de contacto. Si vas a llamar, usa el número de la web oficial.');
+  else if(phone.test(text) && callToAction.test(hay) && story.test(hay))
+    signal('Pide que llames a un número para resolver un cobro, una renovación o un pedido. Es el engaño de la «llamada de soporte»: busca el teléfono en la web oficial, no uses el de este correo.',verified?2:3);
   // Business email compromise: "we changed our bank account, pay here". Gmail and Outlook do not flag it.
   if(/\b(nueva|nuevo|cambi\w*|actualiz\w*|modific\w*|new|changed?|updated?)\b.{0,60}\b(cuenta bancaria|datos bancarios|numero de cuenta|cuenta de (deposito|pago)|iban|swift|bank (account|details)|banking details|wire instructions)\b/.test(hay)
       && /\b(transfier\w*|transferencia|deposit\w*|pag[aeou]\w*|abon\w*|wire|pay|payment|remit\w*)\b/.test(hay))

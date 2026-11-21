@@ -4,8 +4,8 @@ import { checkLink } from '@shared/mail/mail-insights';
 import { insertLink, linksIn, normalizeUrl } from '../services/mailLinks';
 
 /** Where each link of a message really goes, with a warning when its text shows another site. */
-export function LinkSummary({ body }: { body: string }) {
-  const links = linksIn(body);
+export function LinkSummary({ body = '', links: given }: { body?: string; links?: { text: string; href: string }[] }) {
+  const links = given ?? linksIn(body);
   if (!links.length) return null;
   return (
     <ul className="be-links" aria-label="Enlaces de este correo">
