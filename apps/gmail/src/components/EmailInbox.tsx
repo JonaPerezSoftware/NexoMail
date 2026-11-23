@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Mail, MailCheck, Search, Trash2, ShieldCheck, ArrowLeft, RefreshCw, Undo2, Tag, Folder, PenSquare, Reply, Sparkles, MoreHorizontal, FileText, Pencil, Loader2, ShieldAlert, ExternalLink } from 'lucide-react';
 import {MailDocument} from './MailDocument';
 import { MailSafety } from './MailSafety';
@@ -91,6 +91,9 @@ export function EmailInbox(p:Props){
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[selected?.id,selected?.bodyHtml]);
   const webUrl=selected && p.connected ? openInProviderUrl(selected) : null;
+  /** Attachments without the images shown inside the text. Stable, so the attachment list is read once per message. */
+  const {onListAttachments}=p;
+  const listVisibleAttachments=useCallback((email:Email)=>onListAttachments(email).then(list=>list.filter(attachment=>!isInlineImage(attachment,email))),[onListAttachments]);
   const folderName=MAIL_FOLDERS.find(f=>f.id===folder)?.name ?? 'Correo';
 
   const labelsOf=(email:Email)=>{const manual=manualOf(email);return manual.length?manual:automatic?(email.insights?.categories || []):[email.category];};
@@ -155,7 +158,7 @@ export function EmailInbox(p:Props){
                 <span className="mx-subject">{email.subject || '(Sin asunto)'}</span>
                 <span className="mx-snippet">{email.snippet}</span>
                 {(category || risky) && <span className="mx-tags">
-                  {category && category!=='Sin clasificar' && <span className={`mx-tag ${manual?'mx-manual':''}`} title={manual?'Clasificado a mano':'Clasificación automática'}>{manual && <Tag aria-hidden="true"/>}{category}</span>}
+                  {category && category!=='Sin clasificar' && <span className={`mx-tag ${manual?'mx-manual':''}`} title={manual?'Clasificado a mano':`Clasificación automática · ${email.insights?.classificationReasons[0]?.replace(/^[^:]+:\s*/,'') ?? ''}`}>{manual && <Tag aria-hidden="true"/>}{category}</span>}
                   {risky && <span className={`mx-tag mx-risk ${email.insights!.level}`}>{email.insights!.label}</span>}
                 </span>}
               </span>
@@ -215,11 +218,11 @@ export function EmailInbox(p:Props){
                 </>}
             </div>
             {inSpam && <p className="mx-classify-note">{MAIL} lo marcó como no deseado. Si no reconoces al remitente, no abras sus enlaces ni adjuntos. «No es spam» lo devuelve a Entrada y le enseña a {MAIL} que es legítimo.</p>}
-            {!inTrash && !inSpam && <p className="mx-classify-note">La categoría se guarda como etiqueta en tu {MAIL} y tiene prioridad sobre la agrupación automática. Los envíos se aprueban en Acciones.</p>}
+            {!inTrash && !inSpam && <p className="mx-classify-note">La categoría se guarda como etiqueta en tu {MAIL} y tiene prioridad sobre la agrupación automática. NexoMail la recuerda: los próximos correos de este remitente se agruparán igual. Los envíos se aprueban en Acciones.</p>}
           </header>
           {selected.insights && <MailSafety report={selected.insights} onVerify={!inSent && p.onVerifyByOtherChannel?()=>p.onVerifyByOtherChannel!(selected):undefined}/>}
           <p className="mx-safe"><ShieldCheck aria-hidden="true"/>Lectura protegida: el contenido activo se bloquea, cada enlace se revisa antes de abrirlo y las imágenes externas no se cargan hasta que lo pidas.</p>
-          <MailAttachments key={`att-${selected.id}`} email={selected} risky={!!selected.insights && selected.insights.level!=='none'} onList={email=>p.onListAttachments(email).then(list=>list.filter(attachment=>!isInlineImage(attachment,email)))} onDownload={p.onDownloadAttachment} onFindings={p.onAttachmentFindings}/>
+          <MailAttachments key={`att-${selected.id}`} email={selected} risky={!!selected.insights && selected.insights.level!=='none'} onList={listVisibleAttachments} onDownload={p.onDownloadAttachment} onFindings={p.onAttachmentFindings}/>
           <MailDocument key={selected.id} inline={inlineImages} html={selected.bodyHtml} text={selected.body} senderDomain={selected.sender.split('@').pop()} verified={selected.insights?.sender?.status==='verified'} knownSender={!!selected.insights?.notes.some(note=>/^Enlaces de seguimiento de .+ ya te ha escrito antes/.test(note))}/>
         </div> : <div className="pa-empty mx-reader-empty"><Mail aria-hidden="true"/><h3>Selecciona un correo</h3><p>{inTrash?'Ábrelo para revisarlo y recuperarlo si lo necesitas.':'Su contenido aparecerá aquí para que lo leas con calma.'}</p></div>}
       </article>

@@ -1,6 +1,6 @@
 # NexoMail · Asistente de correo con IA para Gmail y Outlook
 
-**Versión actual: 1.10.0** · Extensión de navegador (Manifest V3) para Chrome, Edge y Brave.
+**Versión actual: 1.11.0** · Extensión de navegador (Manifest V3) para Chrome, Edge y Brave.
 
 NexoMail añade un asistente de inteligencia artificial dentro de Gmail y Outlook web. Puede leer, resumir, buscar, clasificar, redactar, enviar, mover a la papelera y recuperar correos a partir de instrucciones en lenguaje natural. **Ninguna acción sensible se ejecuta sin tu aprobación** (modelo *human-in-the-loop*).
 
@@ -41,14 +41,16 @@ Gmail y Outlook usan **exactamente la misma aplicación**. Solo cambia la pieza 
 ### Cinco secciones
 | Sección | Qué hace |
 |---|---|
-| **Chat** | Conversación con el agente. Cada mensaje muestra fecha y hora, y una flecha baja al último mensaje. El botón **Sugerencias** ofrece acciones rápidas, y se pueden adjuntar archivos. Si la consulta usa IA, se puede ver el paso a paso de cómo la resolvió. |
-| **Correo** | Bandeja con carpetas (Entrada, Enviados, Borradores guardados, Destacados, Todos, Papelera), búsqueda, filtros por categoría y lector seguro de HTML. Desde aquí también se redacta un correo nuevo, se responde (a mano o con IA), se clasifica a mano y se recupera de la papelera. |
-| **Acciones** | Propuestas del agente pendientes de aprobación. Se pueden **editar** antes de aprobar, incluido añadir o quitar adjuntos. |
-| **Historial** | Auditoría de todo lo consultado, propuesto, aprobado, rechazado o fallido. Se puede buscar, filtrar por tipo y **por fecha** (hoy, 7 días, 30 días o un rango), y exportar a JSON. |
-| **Ajustes** | Cuenta conectada, tema claro u oscuro, revisión estricta, estado de la IA, datos guardados y permisos concedidos. |
+| **Chat** | Conversación con el agente. Cada mensaje muestra fecha y hora, y una flecha baja al último mensaje. El botón **Sugerencias** ofrece acciones rápidas, y se pueden adjuntar archivos. Las respuestas de la IA se escriben **en vivo**, y el pie del chat permite elegir el modelo (Claude o Gemini). En «Cómo lo resolvió» se ve el paso a paso y cuánto tardó, también cuando se respondió en tu equipo sin la IA. «Reiniciar conversación» empieza de cero. |
+| **Correo** | Bandeja con carpetas (Entrada, Enviados, Borradores guardados, Destacados, Todos, Papelera), búsqueda, fecha y hora de cada correo, filtros por categoría con **clasificación automática que aprende de ti** y lector seguro de HTML con las imágenes del propio correo. Cada correo se puede **abrir en Gmail u Outlook**. Desde aquí también se redacta un correo nuevo, se responde (a mano o con IA), se clasifica a mano y se recupera de la papelera. |
+| **Acciones** | Propuestas del agente pendientes de aprobación, cada una con la **fecha y hora en que se pidió** («Pedida hoy a las 23:40»). Se pueden **editar** antes de aprobar, incluidos Cc, Cco, el formato del texto y los adjuntos. |
+| **Historial** | Auditoría de todo lo consultado, propuesto, aprobado, rechazado o fallido. Se puede buscar, filtrar por tipo y **por fecha** (hoy, 7 días, 30 días o un rango), y exportar a JSON. Al aprobar o rechazar una propuesta se anota también cuándo se pidió. |
+| **Ajustes** | Cuenta conectada, tema claro u oscuro, revisión estricta, **modelo de IA** (Claude o Gemini), firma, estado de la IA, datos guardados y permisos concedidos. |
 
 ### Agente de IA con dos motores
 - **IA (LLM):** Anthropic Claude (Claude Opus 5.5), Google Gemini u Ollama local, con *tool calling*. El modelo decide qué herramienta usar.
+- **Elegir el modelo:** si el servidor tiene configuradas las claves de Claude y de Gemini, se elige cuál usar en **Ajustes** o en el pie del chat. La elección se guarda por cuenta, en este navegador.
+- **Respuesta en vivo:** con los dos modelos, el texto aparece mientras se escribe. Si el servidor es de una versión anterior sin esta función, se usa la respuesta completa de siempre.
 - **Motor de reglas local:** se usa cuando no hay IA configurada o cuando la IA falla (por ejemplo, un error 503 por saturación). Así el asistente sigue funcionando.
 
 ### Herramientas del agente
@@ -157,9 +159,10 @@ El código está en `apps/gmail/` y se compila dos veces con Vite:
 Nexo-Mail/
 ├── apps/gmail/                 Interfaz React única (se compila para Gmail y Outlook)
 │   ├── .env / .env.outlook     Elige el proveedor al compilar
+│   ├── tests/                  Pruebas (Node y navegador)
 │   └── src/
 │       ├── App.tsx             Estado global, navegación y aprobación de acciones
-│       ├── components/         Chat, Correo, Acciones, Historial, Ajustes, redacción…
+│       ├── components/         Chat, Correo, Acciones, Historial, Ajustes, redacción (RichEditor, ComposeModal)…
 │       └── services/
 │           ├── agentEngine.ts       Agente: IA con herramientas y motor de reglas
 │           ├── agentTools.ts        Definición y ejecución de herramientas
@@ -169,9 +172,17 @@ Nexo-Mail/
 │           ├── realGmailProvider.ts Adaptador de la API de Gmail
 │           ├── outlookProvider.ts   Adaptador de Microsoft Graph (MSAL)
 │           ├── platform.ts          Nombre, límites y textos según el proveedor
+│           ├── llmClient.ts         Conexión con el servidor de IA, respuesta en vivo y elección de modelo
+│           ├── categoryMemory.ts    Categorías aprendidas de tus clasificaciones
+│           ├── contacts.ts          Libreta de contactos
+│           ├── senderHistory.ts     Historial de remitentes (imitaciones, remitentes nuevos)
+│           ├── outgoingChecks.ts    Datos sensibles y respuestas desviadas al enviar
+│           ├── richText.ts          Texto con formato, imágenes en línea y borradores
+│           ├── qrScan.ts            Lectura de códigos QR en imágenes adjuntas
 │           └── dates.ts             Fechas del chat y del historial
 ├── shared/                     Código común
-│   ├── mail/                   Análisis de riesgo, documento seguro y textos del chat
+│   ├── mail/                   Análisis de riesgo, clasificador de categorías (mail-classifier.ts),
+│   │                           revisión de adjuntos, documento seguro y textos del chat
 │   ├── storage/                Cliente de almacenamiento por cuenta
 │   └── styles/                 Estilos compartidos (nexo-ui.css)
 ├── extension/                  Extensión lista para cargar en el navegador
@@ -190,7 +201,9 @@ Nexo-Mail/
 │       ├── api/                gmail.py (IA), storage.py (datos), health.py
 │       ├── core/config.py      Configuración
 │       ├── services/llm_retry.py Reintentos ante saturación del proveedor
+│       ├── services/claude_provider.py Conexión con Claude (Anthropic)
 │       └── storage/            Conexión y esquema de PostgreSQL
+│   └── tests/                  Pruebas del servidor (Claude, Gemini y elección de modelo)
 ├── scripts/                    build.mjs y configuración inicial
 ├── docs/ARQUITECTURA.md        Decisiones técnicas
 ├── CONFIGURAR_SERVIDOR.cmd     Prepara el servidor (una vez)
@@ -298,7 +311,7 @@ El botón **Sugerencias** (bombilla junto al clip) ofrece las cinco acciones que
 Los análisis sin IA dan siempre el mismo resultado, no envían tus correos a ningún proveedor y funcionan aunque Gemini esté saturado.
 
 ### Aprobar acciones
-En **Acciones** revisa cada propuesta. Puedes **Editar** el destinatario, el asunto, el mensaje y los adjuntos, **Rechazar** o **Aprobar**. En las propuestas con varios correos (limpiar, eliminar, recuperar o etiquetar) puedes **marcar o desmarcar** cada correo antes de aprobar.
+En **Acciones** revisa cada propuesta. Bajo el título se ve cuándo la pediste («Pedida ayer a las 21:10»; al pasar el ratón, la fecha completa). La fecha se conserva al recargar, y queda en el Historial al aprobarla o rechazarla. Puedes **Editar** el destinatario, el asunto, el mensaje y los adjuntos, **Rechazar** o **Aprobar**. En las propuestas con varios correos (limpiar, eliminar, recuperar o etiquetar) puedes **marcar o desmarcar** cada correo antes de aprobar.
 
 - **Enviar** y **mover a la papelera** siempre requieren aprobación.
 - **Etiquetar** también la requiere si activas *Revisión estricta* en Ajustes.
@@ -324,6 +337,16 @@ Se pueden adjuntar archivos desde el chat, al redactar o al editar una propuesta
 
 ### Adjuntos recibidos
 Al abrir un correo en **Correo** se listan sus adjuntos con nombre y tamaño. **Nada se descarga hasta que lo pides**: las imágenes (JPG, PNG, GIF, WebP) se pueden **Ver** dentro de la app y cualquier archivo se puede **Descargar**. NexoMail nunca abre ni ejecuta los archivos. Los programas, scripts y documentos con macros llevan un aviso y piden confirmación, igual que cualquier descarga de un correo con señales de riesgo o de más de 15 MB. Los SVG y HTML no se previsualizan porque podrían ejecutar código.
+
+### Clasificación automática
+Con **Agrupar automáticamente** activado, cada correo recibe una categoría (Trabajo, Personal, Importante, Finanzas o Boletines). Se calcula en tu equipo, sin la IA, sumando puntos de varias señales:
+- **Qué dice:** las palabras del asunto valen el doble que las del texto. Las firmas y avisos legales del pie («el equipo de…», «por tu seguridad…») no cuentan.
+- **Quién lo envía:** un banco, una dirección de facturación, una universidad, una lista de correo o una persona desde su cuenta personal.
+- **Lo que ya sabe tu correo:** las pestañas Promociones, Social y Foros de Gmail, y las cabeceras de las listas de correo (envíos masivos). La pestaña «Principal» de Gmail no se toma como «Personal».
+
+Una categoría solo se asigna con pruebas suficientes; si no, el correo queda **Sin clasificar**. Los envíos masivos nunca salen como Personal, y su «¡Urgente!» de marketing no los vuelve Importantes. Al pasar el ratón por la etiqueta se ve el motivo.
+
+**Aprende de ti.** Cuando clasificas un correo a mano, los próximos correos de ese remitente se agrupan igual. Si clasificas igual a dos o más personas de una misma organización (por ejemplo, tu universidad), se aplica a toda la organización, pero nunca a dominios compartidos como gmail.com u outlook.com. También aprende de las etiquetas que ya pusiste en Gmail u Outlook, y los correos de tu misma empresa se agrupan como Trabajo. Se guarda solo en este navegador (direcciones y categoría). Quitar la clasificación hace que lo olvide.
 
 ### Clasificación manual
 En **Correo** puedes asignar una categoría: Trabajo, Personal, Importante, Finanzas o Boletines.
@@ -390,7 +413,12 @@ Gmail y Outlook ya filtran spam y malware en sus servidores. NexoMail añade lo 
 **Demostración:** el buzón de ejemplo incluye un aviso real de banco verificado, su imitación, un proveedor que secuestra una conversación para cambiar la cuenta bancaria y un boletín con instrucciones ocultas para la IA.
 
 ### Qué no debe subirse a un repositorio
-`backend/.env` (claves y contraseñas), `DEPLOY_DATABASE.sql` (contiene una contraseña), `backend/.venv/`, `node_modules/` y `extension/apps/`. Todos están en `.gitignore`.
+Todo esto está en `.gitignore`:
+- `backend/.env`: claves de Claude y Gemini, clave de enlace y contraseña de la base de datos.
+- `DEPLOY_DATABASE.sql`, `BASE_DE_DATOS_NEXOMAIL.sql` y `docs/BASE_DE_DATOS.md`: base de datos y su contraseña, solo en tu equipo.
+- `Claude outputs/`: archivos de trabajo locales (incluidos los archivos de prueba de adjuntos).
+- `backend/.venv/`, `node_modules/`, `dist/`, `extension/apps/`, `__pycache__/` y `.pytest_cache/`: se generan al instalar o compilar.
+- `.claude/`, `.vscode/`, `.idea/`, registros (`*.log`) y archivos del sistema (`Thumbs.db`, `desktop.ini`, `.DS_Store`).
 
 ---
 
@@ -402,7 +430,9 @@ Todas las rutas requieren la cabecera `X-EmailAgent-Token`.
 |---|---|---|
 | GET | `/api/health` | Estado del servidor (lo usa **Comprobar conexión**) |
 | GET | `/api/gmail/agent/health` | Proveedor y modelo de IA configurados |
-| POST | `/api/gmail/agent/chat` | Consulta al modelo con herramientas. Reintenta ante errores 503 y 529 de saturación. Gmail y Outlook la usan por igual. |
+| GET | `/api/gmail/agent/providers` | Modelos de IA disponibles (los que tienen clave en `backend/.env`) |
+| POST | `/api/gmail/agent/chat` | Consulta al modelo con herramientas. Reintenta ante errores 503 y 529 de saturación. Gmail y Outlook la usan por igual. Acepta `provider` (`anthropic` o `gemini`). |
+| POST | `/api/gmail/agent/chat/stream` | Igual, pero devuelve la respuesta en vivo (NDJSON: trozos de texto y el resultado final) |
 | GET | `/api/storage/{gmail\|microsoft}/workspace` | Carga el chat, los borradores, las preferencias y el historial de la cuenta |
 | POST | `/api/storage/{provider}/workspace/{section}` | Guarda una sección con control de versiones |
 | GET / POST | `/api/storage/{provider}/proposals` | Lee o reemplaza las propuestas pendientes de la cuenta |
@@ -454,9 +484,9 @@ Si solo cambias archivos de `extension/` (por ejemplo `options.html` o `content.
 node apps/gmail/tests/security.test.mjs
 ```
 
-La libreta de contactos tiene sus propias 15 pruebas: `node apps/gmail/tests/contacts.test.mjs`. Las fases 3 y 4 de seguridad (datos sensibles al enviar, respuestas desviadas, llamadas falsas, contenido de los adjuntos y falsos avisos de enlaces, dominios de Microsoft por país y correos propios) tienen 45: `node apps/gmail/tests/security-phase34.test.mjs`. Los enlaces con texto propio tienen 10: `node apps/gmail/tests/links.test.mjs`.
+La libreta de contactos tiene sus propias 14 pruebas: `node apps/gmail/tests/contacts.test.mjs`. Las fases 3 y 4 de seguridad (datos sensibles al enviar, respuestas desviadas, llamadas falsas, contenido de los adjuntos y falsos avisos de enlaces, dominios de Microsoft por país y correos propios) tienen 45: `node apps/gmail/tests/security-phase34.test.mjs`. Los enlaces con texto propio tienen 10: `node apps/gmail/tests/links.test.mjs`. La clasificación automática y lo que aprende de ti tienen 26: `node apps/gmail/tests/categories.test.mjs`. El servidor tiene 37 pruebas sin conexión (Claude, Gemini, respuesta en vivo y elección de modelo): `backend\.venv\Scripts\python.exe backend\tests\test_claude_provider.py`.
 
-Son 49 comprobaciones de la verificación del remitente, las imitaciones, el fraude de cambio de cuenta, las instrucciones para la IA y el historial de remitentes. No necesitan servidor ni conexión.
+Son 47 comprobaciones de la verificación del remitente, las imitaciones, el fraude de cambio de cuenta, las instrucciones para la IA y el historial de remitentes. No necesitan servidor ni conexión.
 
 Los casos de enlaces necesitan analizar HTML real, así que tienen otras 17 pruebas, incluida la lectura de códigos QR, que se ejecutan en el navegador:
 
@@ -523,7 +553,8 @@ Implementa la interfaz `MailProvider` de `apps/gmail/src/services/mailProvider.t
 
 | Versión | Cambios principales |
 |---|---|
-| **1.10.0** | Una sola interfaz React para Gmail y Outlook (se retira la app Angular). Nueva página de opciones, botón Sugerencias, flecha al último mensaje, fecha en el chat, filtro por fecha en Historial, adjuntos al editar propuestas, listas legibles en modo oscuro y botones del panel sin contorno residual. |
+| **1.11.0** | **Claude (Anthropic)** como modelo de IA y **elección entre Claude y Gemini** en Ajustes y en el chat. **Respuestas en vivo** y tiempo de cada respuesta. **Redacción como en Gmail**: formato, listas, colores, imágenes dentro del texto, Cc/Cco, firma, emojis y ventana grande. Imágenes del propio correo al leer y botón **Abrir en Gmail/Outlook**. Seguridad fases 3 y 4: códigos QR, llamadas falsas, revisión del contenido real de los adjuntos, datos sensibles al enviar, respuestas desviadas, **Reportar como spam** y **Verificar por otro canal**. **Clasificación automática por puntos que aprende de ti**. Libreta de contactos. **Fecha en que se pidió** cada acción. Correcciones: tus enviados ya no salen como phishing, dominios de Microsoft por país, menos falsos avisos de enlaces, «Buscando adjuntos…» que no terminaba y pasos del chat que decían «con la IA» sin usarla. |
+| 1.10.0 | Una sola interfaz React para Gmail y Outlook (se retira la app Angular). Nueva página de opciones, botón Sugerencias, flecha al último mensaje, fecha en el chat, filtro por fecha en Historial, adjuntos al editar propuestas, listas legibles en modo oscuro y botones del panel sin contorno residual. |
 | 1.9.x | Rediseño premium y responsive, tipografía Inter, recuperar de la papelera, clasificación manual, adjuntos desde el chat, política de privacidad, paso a paso del agente, chat que abre en el último mensaje, eliminación segura (sin envíos accidentales), reintentos ante el 503 de Gemini y lector de correos con formato. |
 | 1.8.x | Persistencia opcional con PostgreSQL, recuperación de la sesión al recargar y autorización directa con Google. |
 | 1.2 – 1.7 | Ventana flotante sin Side Panel API, integración de los proyectos de Gmail y Outlook en una sola extensión, servidor de IA compartido y cuentas personales e institucionales de Microsoft. |

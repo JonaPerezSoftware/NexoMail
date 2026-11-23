@@ -143,7 +143,9 @@ function describeStep(step: AgentStep): { label: string; text: string; tone: str
   const args = (step.details?.args ?? {}) as Record<string, unknown>;
   switch (step.type) {
     case 'TOOL_CALL': {
-      const name = (tool && TOOL_NAMES[tool]) || tool || 'Herramienta';
+      // Local analysis has no tool name: its own message says what it did ("Análisis local de 40 correo(s)…").
+      if (!tool) return { label: 'Análisis local', text: step.message.replace(/\s*\(sin enviar datos a la IA\)/i, '') + ' en tu equipo.', tone: 'tool' };
+      const name = TOOL_NAMES[tool] || tool;
       const ids = Array.isArray(args.email_ids) ? args.email_ids.length : 0;
       const detail = typeof args.query === 'string' ? `«${args.query}»`
         : typeof args.recipient === 'string' ? `para ${args.recipient}`
@@ -164,7 +166,9 @@ function describeStep(step: AgentStep): { label: string; text: string; tone: str
       // How long each model call took, with the tokens it read: shown as written.
       if (/^Respuesta \d+ del modelo en /.test(step.message)) return { label: 'Tiempo', text: step.message.replace(/^Respuesta (\d+) del modelo/, 'Llamada $1 a la IA'), tone: 'think' };
       if (/^Respuesta local en /.test(step.message)) return { label: 'Tiempo', text: step.message.replace(/^Respuesta local/, 'Respondido'), tone: 'think' };
-      return { label: 'Análisis', text: /Modo local/i.test(step.message) ? 'Interpretando tu petición con reglas locales.' : 'Interpretando tu petición con la IA.', tone: 'think' };
+      if (/^Consulta de análisis: /.test(step.message)) return { label: 'Análisis', text: `Petición reconocida: ${step.message.replace(/^Consulta de análisis: /, '')}. Se responde en tu equipo, sin la IA.`, tone: 'think' };
+      if (/^Modelo LLM/.test(step.message)) return { label: 'Análisis', text: 'Interpretando tu petición con la IA.', tone: 'think' };
+      return { label: 'Análisis', text: 'Interpretando tu petición con reglas locales.', tone: 'think' };
     case 'ACTION_CREATED':
       return { label: 'Propuesta', text: 'Creada y enviada a Acciones para que la revises.', tone: 'action' };
     default:

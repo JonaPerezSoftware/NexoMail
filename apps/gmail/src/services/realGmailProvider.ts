@@ -355,7 +355,9 @@ export class RealGmailProvider {
     partial=partial || (!plain && !html);
     // Gmail writes its SPF/DKIM/DMARC verdict in the topmost Authentication-Results header.
     const auth=senderAuthentication(headers.map((h:any)=>({name:String(h.name || ''),value:String(h.value || '')})),senderEmail);
-    const insights=analyzeMail({subject,sender:senderEmail,senderName,text:body,html,auth,
+    // Mailing lists announce themselves in their headers: those messages are never personal mail.
+    const bulk=headers.some((h:any)=>/^(list-unsubscribe|list-id)$/i.test(String(h.name || '')) || (/^precedence$/i.test(String(h.name || '')) && /bulk|list|junk/i.test(String(h.value || ''))));
+    const insights=analyzeMail({subject,sender:senderEmail,senderName,text:body,html,auth,bulk,
       labels:msg.labelIds || [],filenames,replyTo:getHeader('Reply-To').match(/<?([^<>\s]+@[^<>\s]+)>?/)?.[1],partial});
     // What this account really sent (Gmail labels it SENT) is not checked as possible fraud. The From address alone
     // is not enough: some scams forge your own address as the sender.
@@ -377,7 +379,8 @@ export class RealGmailProvider {
       date: messageStamp(new Date(parseInt(msg.internalDate || '', 10) || Date.parse(dateStr || '') || Date.now())),
       timestamp: parseInt(msg.internalDate || Date.now().toString(), 10),
       read: !isUnread,
-      category: msg.labelIds?.includes('CATEGORY_PROMOTIONS') ? 'Boletines' : msg.labelIds?.includes('CATEGORY_PERSONAL') ? 'Personal' : msg.labelIds?.includes('IMPORTANT') ? 'Importante' : 'Sin clasificar',
+      // Gmail's «Principal» tab (CATEGORY_PERSONAL) holds almost all mail, so it is not read as «Personal».
+      category: msg.labelIds?.includes('CATEGORY_PROMOTIONS') ? 'Boletines' : msg.labelIds?.includes('IMPORTANT') ? 'Importante' : 'Sin clasificar',
       insights: own ? ownMessageInsights(insights) : insights,
       priority: isUrgent ? 'urgent' : 'normal',
       labels: msg.labelIds || [],

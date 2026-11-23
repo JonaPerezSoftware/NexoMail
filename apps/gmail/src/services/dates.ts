@@ -43,3 +43,18 @@ export function mailWhen(timestamp: number): string {
   const short = date.toLocaleDateString('es-ES', { day: 'numeric', month: 'short' }).replace('.', '');
   return date.getFullYear() === new Date().getFullYear() ? `${short} ${timeLabel(date)}` : `${short} ${date.getFullYear()}`;
 }
+
+/** When a proposal was requested: "hoy a las 23:40", "ayer a las 21:10" or "5 nov 2026 a las 09:50". */
+export function requestedWhen(value: string | undefined | null): string {
+  const date = parseStamp(value);
+  if (!date) return '';
+  const day = dayLabel(date);
+  if (day === 'Hoy' || day === 'Ayer') return `${day.toLowerCase()} a las ${timeLabel(date)}`;
+  return `el ${date.toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' }).replace('.', '')} a las ${timeLabel(date)}`;
+}
+
+/** The full date for a tooltip: "sábado, 22 de noviembre de 2026, 23:40". */
+export function fullStamp(value: string | undefined | null): string {
+  const date = parseStamp(value);
+  return date ? date.toLocaleString('es-ES', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+}

@@ -32,6 +32,7 @@ function bodyWithLinks(body: string) {
   return linksIn(body).length ? out : body;
 }
 import { formatSize, readMailFile } from '../services/mailFiles';
+import { fullStamp, parseStamp, requestedWhen } from '../services/dates';
 
 interface PendingActionsListProps {
   pendingActions: PendingAction[];
@@ -190,6 +191,7 @@ export const PendingActionsList: React.FC<PendingActionsListProps> = ({
               <div className="pa-heading">
                 <span className="pa-kind">{kind.label}</span>
                 <h3 className="pa-title">{headline}</h3>
+                {requestedWhen(action.createdAt) && <time className="pa-when" dateTime={parseStamp(action.createdAt)?.toISOString()} title={`Pedida el ${fullStamp(action.createdAt)}`}>Pedida {requestedWhen(action.createdAt)}</time>}
               </div>
               <span className={`pa-impact pa-impact-${action.impactScore === 'Crítico' || action.impactScore === 'Alto' ? 'high' : 'low'}`}>
                 Impacto {action.impactScore.toLowerCase()}

@@ -1,0 +1,84 @@
+// Pruebas de la clasificación automática de correos (categorías) y de lo que aprende de tus clasificaciones.
+// Ejecutar desde la raíz: node apps/gmail/tests/categories.test.mjs
+import { fileURLToPath, pathToFileURL } from 'node:url';
+const root=fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/,'');
+const {createServer}=await import(pathToFileURL(root+'/node_modules/vite/dist/node/index.js').href);
+const mem=()=>{const m=new Map();return{getItem:k=>m.get(k)??null,setItem:(k,v)=>m.set(k,String(v)),removeItem:k=>m.delete(k)}};
+globalThis.localStorage=mem();globalThis.sessionStorage=mem();
+globalThis.window={emailAgentHost:{config:{apiBaseUrl:'http://x',pairingToken:'t',googleClientId:'x',microsoftClientId:'id'},pageAccount:null},location:{},addEventListener(){}};
+const vite=await createServer({root,configFile:root+'/vite.config.ts',server:{middlewareMode:true,hmr:false,ws:false},appType:'custom',logLevel:'error'});
+const {analyzeMail}=await vite.ssrLoadModule('@shared/mail/mail-insights');
+const memory=await vite.ssrLoadModule('/src/services/categoryMemory.ts');
+let fails=0;const check=(n,ok,i='')=>{if(!ok)fails++;console.log((ok?'OK   ':'FALLO')+' '+n+(ok?'':' -> '+i));};
+const cats=input=>analyzeMail({senderName:'',...input}).categories;
+const show=c=>c.join(', ') || 'Sin clasificar';
+
+console.log('— Clasificación por contenido y remitente');
+let c=cats({subject:'Tu estado de cuenta de noviembre',sender:'notificaciones@pichincha.com',text:'Adjuntamos tu estado de cuenta. Saldo disponible: $1.250,00'});
+check('Banco con estado de cuenta → Finanzas',c[0]==='Finanzas',show(c));
+c=cats({subject:'Factura electrónica 001-002-000123',sender:'facturacion@proveedor.com',text:'Estimado cliente, adjuntamos su factura por USD 45,20.'});
+check('Factura → Finanzas primero',c[0]==='Finanzas',show(c));
+c=cats({subject:'Lo nuevo de esta semana',sender:'news@tienda.com',bulk:true,text:'Descubre las novedades. Si no quieres recibir más correos, darte de baja aquí.'});
+check('Boletín de lista de correo → Boletines',c[0]==='Boletines',show(c));
+c=cats({subject:'¡Urgente! 50% de descuento solo hoy',sender:'promo@tienda.com',bulk:true,text:'Ofertas en toda la tienda. Unsubscribe.'});
+check('Promoción con «¡Urgente!» → Boletines, no Importante primero',c[0]==='Boletines',show(c));
+c=cats({subject:'Promoción',sender:'x@tienda.com',labels:['CATEGORY_PROMOTIONS','INBOX'],text:'Mira esto'});
+check('Pestaña Promociones de Gmail → Boletines',c[0]==='Boletines',show(c));
+c=cats({subject:'Notas del primer parcial',sender:'docente@uce.edu.ec',text:'Estimados estudiantes, ya están publicadas las calificaciones en el aula virtual.'});
+check('Universidad → Trabajo (académico)',c[0]==='Trabajo',show(c));
+c=cats({subject:'Reunión del proyecto el martes',sender:'carlos@techpartner.com',text:'Hola, ¿podemos revisar el informe y los entregables el martes a las 10:00?'});
+check('Reunión de proyecto → Trabajo',c[0]==='Trabajo',show(c));
+c=cats({subject:'Cumpleaños de la abuela',sender:'maria.perez@gmail.com',text:'Hola! El sábado celebramos el cumpleaños de la abuela, nos vemos en la casa. Besos'});
+check('Correo de familia desde Gmail → Personal',c[0]==='Personal',show(c));
+c=cats({subject:'Alerta de seguridad',sender:'no-reply@accounts.google.com',text:'Nuevo inicio de sesión en tu cuenta desde Windows.'});
+check('Alerta de seguridad → Importante',c[0]==='Importante',show(c));
+c=cats({subject:'Acción requerida: confirma tu asistencia antes del viernes',sender:'rrhh@empresa.com',text:'Por favor confirma.'});
+check('«Acción requerida» en el asunto → Importante',c.includes('Importante'),show(c));
+
+console.log('\n— Sin falsos positivos');
+c=cats({subject:'Bienvenido a la app',sender:'hola@startup.io',text:'Gracias por registrarte. Saludos, el equipo de Startup. Por tu seguridad, nunca te pediremos tu contraseña.'});
+check('«El equipo de…» y «por tu seguridad» del pie no clasifican',!c.includes('Trabajo') && !c.includes('Importante'),show(c));
+c=cats({subject:'Hola',sender:'pedro@empresa.com',labels:['CATEGORY_PERSONAL','INBOX'],text:'Te escribo para saludarte.'});
+check('Pestaña «Principal» de Gmail ya no significa Personal',!c.includes('Personal'),show(c));
+c=cats({subject:'Te extrañamos, vuelve con 20% de descuento',sender:'marketing@tienda.com',bulk:true,text:'Hola, como estas? Te esperamos. Darte de baja.'});
+check('Envío masivo con tono cercano no es Personal',!c.includes('Personal') && c[0]==='Boletines',show(c));
+c=cats({subject:'Nota rápida',sender:'ana@empresa.com',text:'Lo vemos luego.'});
+check('Sin pruebas suficientes → Sin clasificar',c.length===0,show(c));
+c=cats({subject:'Revisión',sender:'ana@empresa.com',text:'No es urgente, revísalo cuando puedas.'});
+check('«No es urgente» → no Importante',!c.includes('Importante'),show(c));
+c=cats({subject:'Re: proyecto',sender:'ana@empresa.com',labels:['Personal'],text:'Reunión del proyecto mañana.'});
+check('Tu etiqueta manual gana a las palabras',c[0]==='Personal',show(c));
+const r=analyzeMail({subject:'Tu estado de cuenta',sender:'notificaciones@pichincha.com',senderName:'',text:'Saldo $10'});
+check('Cada categoría explica por qué',r.classificationReasons.length===r.categories.length && /^Finanzas: /.test(r.classificationReasons[0]),r.classificationReasons.join(' | '));
+
+console.log('\n— Aprende de tus clasificaciones');
+const mail=(id,sender,subject,extra={})=>({id,sender,senderName:'',subject,body:'',snippet:'',date:'',timestamp:Date.now(),read:true,category:'Sin clasificar',priority:'normal',labels:['INBOX'],
+  insights:analyzeMail({subject,sender,senderName:'',text:''}),...extra});
+const S='prueba';
+let list=memory.applyLearnedCategories(S,[mail('1','ana@gmail.com','Hola')],'yo@gmail.com');
+check('Antes de clasificar: sin categoría',list[0].insights.categories.length===0,show(list[0].insights.categories));
+memory.learnCategory(S,mail('0','ana@gmail.com','Viejo'),'Personal');
+list=memory.applyLearnedCategories(S,[mail('1','ana@gmail.com','Hola')],'yo@gmail.com');
+check('Después: los correos de ese remitente salen como Personal',list[0].insights.categories[0]==='Personal' && /Aprendido de ti/.test(list[0].insights.classificationReasons[0]),show(list[0].insights.categories));
+list=memory.applyLearnedCategories(S,[mail('2','otro@gmail.com','Hola')],'yo@gmail.com');
+check('No se extiende a todo gmail.com',list[0].insights.categories.length===0,show(list[0].insights.categories));
+memory.learnCategory(S,mail('3','a@universidad.edu.ec','x'),'Trabajo');
+memory.learnCategory(S,mail('4','b@universidad.edu.ec','x'),'Trabajo');
+list=memory.applyLearnedCategories(S,[mail('5','c@mail.universidad.edu.ec','Aviso')],'yo@gmail.com');
+check('Dos direcciones de la misma organización → toda la organización',list[0].insights.categories[0]==='Trabajo',show(list[0].insights.categories));
+memory.learnCategory(S,mail('6','d@universidad.edu.ec','x'),'Finanzas');
+list=memory.applyLearnedCategories(S,[mail('7','e@universidad.edu.ec','Aviso')],'yo@gmail.com');
+check('Si no coinciden, no se generaliza a la organización',!(list[0].insights.categories[0]==='Trabajo' && /varias direcciones/.test(list[0].insights.classificationReasons[0])),list[0].insights.classificationReasons.join(' | '));
+memory.learnCategory(S,mail('8','ana@gmail.com','x'),null);
+list=memory.applyLearnedCategories(S,[mail('9','ana@gmail.com','Hola')],'yo@gmail.com');
+check('Quitar la clasificación hace que lo olvide',list[0].insights.categories.length===0,show(list[0].insights.categories));
+list=memory.applyLearnedCategories(S,[mail('10','luis@miempresa.com','Hola')],'yo@miempresa.com');
+check('Correo de tu misma empresa → Trabajo',list[0].insights.categories[0]==='Trabajo',show(list[0].insights.categories));
+list=memory.applyLearnedCategories('otra',[mail('11','jefe@empresa.com','Hola',{manualCategories:['Importante']}),mail('12','jefe@empresa.com','Otro')],'yo@gmail.com');
+check('Aprende de etiquetas que ya pusiste en Gmail/Outlook',list[1].insights.categories[0]==='Importante',show(list[1].insights.categories));
+list=memory.applyLearnedCategories(S,[mail('13','pepe@gmail.com','Hola',{labels:['SENT']})],'yo@gmail.com');
+check('Los enviados no se tocan',list[0].insights.categories.length===0);
+
+await vite.close();
+console.log(fails?`\n${fails} prueba(s) fallaron`:'\nTodas las pruebas pasaron');
+process.exit(fails?1:0);

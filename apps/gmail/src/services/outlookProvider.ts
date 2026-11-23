@@ -306,7 +306,8 @@ export class OutlookProvider {
     const place = folder || Object.entries(ids).find(([, id]) => id === m.parentFolderId)?.[0] || '';
     // Outlook writes its SPF/DKIM/DMARC verdict (and compauth) in the topmost Authentication-Results header.
     const auth = senderAuthentication(m.internetMessageHeaders, sender);
-    const insights = analyzeMail({ subject: m.subject || '', sender, senderName, auth, text: plain || m.bodyPreview || '', html: html || undefined,
+    const bulk = (m.internetMessageHeaders || []).some(h => /^(list-unsubscribe|list-id)$/i.test(h.name) || (/^precedence$/i.test(h.name) && /bulk|list|junk/i.test(h.value)));
+    const insights = analyzeMail({ subject: m.subject || '', sender, senderName, auth, bulk, text: plain || m.bodyPreview || '', html: html || undefined,
       labels: place === 'spam' ? [...categories, 'SPAM'] : categories, hasAttachments: m.hasAttachments, replyTo: m.replyTo?.[0]?.emailAddress.address, partial: !m.body?.content });
     // What this account really sent (it is in Sent Items) is not checked as possible fraud. The From address alone is
     // not enough: some scams forge your own address as the sender.

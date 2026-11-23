@@ -1,5 +1,5 @@
 import { askConfirm } from './ConfirmDialog';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Download, Eye, FileText, Image as ImageIcon, Loader2, Paperclip, ShieldAlert, X } from 'lucide-react';
 import type { Email, MailAttachment } from '../types/email';
 import { formatSize } from '../services/mailFiles';
@@ -41,6 +41,13 @@ export function MailAttachments({ email, risky, onList, onDownload, onFindings }
   const [error, setError] = useState('');
   const [preview, setPreview] = useState<{ name: string; url: string } | null>(null);
 
+  // The latest callbacks, read when needed: a parent that passes new functions on every render must not make the
+  // list load again (that restarted «Buscando adjuntos…» in a loop whenever an attachment had a finding).
+  const onListRef = useRef(onList);
+  onListRef.current = onList;
+  const onFindingsRef = useRef(onFindings);
+  onFindingsRef.current = onFindings;
+
   // Outlook lists attachments only when a message that has them is opened.
   useEffect(() => {
     let active = true;
@@ -48,12 +55,12 @@ export function MailAttachments({ email, risky, onList, onDownload, onFindings }
     if (email.attachments) { setItems(email.attachments); return; }
     if (!email.hasAttachments) { setItems([]); return; }
     setItems(null);
-    onList(email).then((list) => { if (active) setItems(list); })
+    onListRef.current(email).then((list) => { if (active) setItems(list); })
       .catch((reason) => { if (active) { setItems([]); setListError(reason instanceof Error ? reason.message : 'No se pudieron leer los adjuntos.'); } });
     return () => { active = false; };
   // Keyed by message: marking it as read must not list its attachments again.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [email.id, email.hasAttachments, onList]);
+  }, [email.id, email.hasAttachments]);
 
   // Phase 3: when the message is opened, each attachment (up to 10 MB) is checked on this device: what it really
   // is, sign-in forms, macros, ZIP contents, PDF scripts and QR codes. Nothing is opened or run.
@@ -93,7 +100,7 @@ export function MailAttachments({ email, risky, onList, onDownload, onFindings }
         all.push(...scan.findings);
         if (active) setScanState(prev => ({ ...prev, [attachment.id]: scan! }));
       }
-      if (active && all.length) onFindings?.(email, all);
+      if (active && all.length) onFindingsRef.current?.(email, all);
     })();
     return () => { active = false; };
   // Once per message; downloads are cached, so reopening it does not download again.

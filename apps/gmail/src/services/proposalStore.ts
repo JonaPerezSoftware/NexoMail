@@ -27,6 +27,8 @@ export function fromStoredProposals(list: StoredProposal[], sessionKey: string, 
     if (action.payload.sessionKey !== sessionKey || action.payload.isReal !== isReal) return [];
     const created = Date.parse(item.created_at);
     if (Number.isNaN(created) || now - created > PROPOSAL_MAX_AGE_MS) return [];
-    return [{ ...action, restored: true, payload: { ...action.payload, attachments: undefined } }];
+    // Keep the moment it was asked for; very old saves without it use the time the row was stored.
+    const createdAt = Number.isNaN(Date.parse(action.createdAt)) ? new Date(created).toISOString() : action.createdAt;
+    return [{ ...action, createdAt, restored: true, payload: { ...action.payload, attachments: undefined } }];
   });
 }

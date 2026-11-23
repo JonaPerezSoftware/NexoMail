@@ -20,3 +20,18 @@ DEPLOY_DATABASE.sql
 # Script para crear la base de datos y su guía de instalación: solo en este equipo.
 /BASE_DE_DATOS_NEXOMAIL.sql
 /docs/BASE_DE_DATOS.md
+
+# Pruebas de Python.
+.pytest_cache/
+*.pyc
+
+# Configuración local de herramientas y editores.
+.claude/
+.vscode/
+.idea/
+
+# Registros y archivos del sistema.
+*.log
+Thumbs.db
+desktop.ini
+.DS_Store

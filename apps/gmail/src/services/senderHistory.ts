@@ -13,7 +13,7 @@ interface Stat { ids: string[]; first: number; contact?: boolean; verified?: boo
 interface History { v: 1; domains: Record<string, Stat>; addresses: Record<string, Stat>; messages: number; sentScan?: number }
 
 /** Domains shared by millions of people: knowing one person there says nothing about the next one. */
-const FREE_MAIL = new Set(['gmail.com', 'googlemail.com', 'hotmail.com', 'hotmail.es', 'outlook.com', 'outlook.es', 'live.com', 'live.com.mx', 'msn.com', 'yahoo.com', 'yahoo.es', 'icloud.com', 'me.com', 'proton.me', 'protonmail.com', 'aol.com', 'gmx.com', 'zoho.com']);
+export const FREE_MAIL = new Set(['gmail.com', 'googlemail.com', 'hotmail.com', 'hotmail.es', 'outlook.com', 'outlook.es', 'live.com', 'live.com.mx', 'msn.com', 'yahoo.com', 'yahoo.es', 'icloud.com', 'me.com', 'proton.me', 'protonmail.com', 'aol.com', 'gmx.com', 'zoho.com']);
 const MAX_IDS = 12, MAX_ENTRIES = 3000;
 /** Below this many observed messages the history is too young to call anyone "new". */
 const MATURE = 30;

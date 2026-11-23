@@ -13,7 +13,7 @@ import { emailProvider } from './services/mockEmailProvider';
 import { mailProvider } from './services/mailProvider';
 import { MAIL, ACCOUNT, STORAGE_PROVIDER, LOAD_STEP, MAX_LOADED, savedMailCount, saveMailCount } from './services/platform';
 import { agentEngine } from './services/agentEngine';
-import { parseStamp } from './services/dates';
+import { parseStamp, requestedWhen } from './services/dates';
 import { loadProviderChoice } from './services/llmClient';
 import { draftBodyFromHtml, draftHtml, draftText } from './services/richText';
 import { loadSignature, withSignature } from './services/signature';
@@ -27,6 +27,7 @@ import { analyzeMail, addFinding } from '@shared/mail/mail-insights';
 import type { AttachmentFinding } from '@shared/mail/attachment-scan';
 import { senderAuthentication } from '@shared/mail/sender-intel';
 import { observeSenders, applySenderContext, needsSentScan, markSentScan } from './services/senderHistory';
+import { applyLearnedCategories, learnCategory } from './services/categoryMemory';
 import { learnContacts, recordSent, sentScanSize, markSentScanned, contactsAtDomain } from './services/contacts';
 import '@shared/styles/mail-insights.css';
 import '@shared/styles/nexo-ui.css';
@@ -44,11 +45,14 @@ function withAttachmentFindings(list:Email[],found:Record<string,AttachmentFindi
 }
 
 /** Adds what NexoMail knows from this account's own history (look-alike domains, new senders, hijacked threads). */
+/** «Pedida hoy a las 23:40.» for the history: when the proposal was asked for, apart from when it was decided. */
+const requestedNote=(action:PendingAction)=>{const when=requestedWhen(action.createdAt);return when?` Pedida ${when}.`:'';};
+
 function withSenderContext(list:Email[]):Email[]{
   const session=mailProvider.getSessionKey();
   observeSenders(session,list);
   learnContacts(session,list,mailProvider.accountEmail());
-  return applySenderContext(session,list);
+  return applyLearnedCategories(session,applySenderContext(session,list),mailProvider.accountEmail());
 }
 
 export function App() {
@@ -72,7 +76,7 @@ export function App() {
   const [historyVersion,setHistoryVersion]=useState(0);
   /** What the content check of each message's attachments found (phase 3), by message id. */
   const [attachmentFindings,setAttachmentFindings]=useState<Record<string,AttachmentFinding[]>>({});
-  const onAttachmentFindings=useCallback((email:Email,findings:AttachmentFinding[])=>setAttachmentFindings(prev=>({...prev,[email.id]:findings})),[]);
+  const onAttachmentFindings=useCallback((email:Email,findings:AttachmentFinding[])=>setAttachmentFindings(prev=>JSON.stringify(prev[email.id])===JSON.stringify(findings)?prev:{...prev,[email.id]:findings}),[]);
   const emails=useMemo(()=>withAttachmentFindings(withSenderContext(rawEmails.map(email=>({...email,insights:email.insights || analyzeMail({subject:email.subject,sender:email.sender,senderName:email.senderName,text:email.body,html:email.bodyHtml,
     auth:email.authHeaders?senderAuthentication(email.authHeaders,email.sender):undefined,labels:[...email.labels,email.category]})}))),attachmentFindings),
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -315,6 +319,9 @@ export function App() {
         for (const old of previous) if (old !== category) emailProvider.removeLabel([email.id], old);
         if (category) emailProvider.labelEmails([email.id], category);
       }
+      // The next messages from this sender get the same category automatically.
+      learnCategory(mailProvider.getSessionKey(), email, category);
+      setHistoryVersion(version => version + 1);
       patchLocal([email.id], item => ({ ...item, manualCategories: category ? [category] : [], labels: [...item.labels.filter(label => !previous.includes(label)), ...(category ? [category] : [])] }));
       addAudit('LABEL_EMAIL', `Clasificación manual: ${email.subject}`, 'HUMAN_APPROVED', category ? `Etiqueta «${category}» aplicada en ${MAIL}.` : 'Clasificación manual retirada.');
     } catch (error) {
@@ -644,7 +651,8 @@ export function App() {
           actionType: action.actionType,
           prompt: `Aprobación manual: ${action.title}`,
           executionStatus: 'HUMAN_APPROVED',
-          details: isReal && action.actionType==='SEND_EMAIL' ? `${MAIL} aceptó el mensaje. La entrega al destinatario sigue sin confirmar.` : `Acción ejecutada en ${isReal ? `${MAIL} real` : 'simulación'}.`
+          details: (isReal && action.actionType==='SEND_EMAIL' ? `${MAIL} aceptó el mensaje. La entrega al destinatario sigue sin confirmar.` : `Acción ejecutada en ${isReal ? `${MAIL} real` : 'simulación'}.`) + requestedNote(action),
+          userConfirmationTime: new Date().toISOString()
         },
         ...prev
       ]);
@@ -686,7 +694,8 @@ La propuesta sigue en Acciones para que la apruebes de nuevo.`);
         actionType: action.actionType,
         prompt: `Rechazo manual: ${action.title}`,
         executionStatus: 'HUMAN_REJECTED',
-        details: `El usuario canceló la ejecución de ${action.title}. No se realizaron cambios.`
+        details: `El usuario canceló la ejecución de ${action.title}. No se realizaron cambios.` + requestedNote(action),
+        userConfirmationTime: new Date().toISOString()
       },
       ...prev
     ]);
