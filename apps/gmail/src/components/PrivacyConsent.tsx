@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import { ShieldCheck } from 'lucide-react';
 
 /** Raising this version changes the text people accept; every connection asks again anyway. */
-export const POLICY_VERSION = '1';
+export const POLICY_VERSION = '2';
 const LOG_KEY = 'nexomail.privacy.log';
 export const PRIVACY_POLICY_URL = '../../privacy.html';
 
@@ -51,8 +51,9 @@ export function PrivacyConsent({ open, provider, onAccept, onCancel }: Props) {
         <h2 id="pc-title">Antes de conectar {provider}</h2>
         <ul>
           <li>NexoMail leerá tus correos para mostrarlos, analizarlos y preparar acciones. <strong>Nada se envía, borra ni mueve sin tu aprobación.</strong></li>
-          <li>El chat, los borradores y el historial se guardan en la base de datos de <strong>tu equipo</strong>.</li>
-          <li>Si usas la IA con Gemini, tu petición y un extracto de los correos se envían a Google.</li>
+          <li>Inicias sesión en la página de {provider}: <strong>NexoMail nunca ve tu contraseña.</strong></li>
+          <li>El chat, los borradores y el historial se guardan <strong>solo en tu equipo</strong>: en tu base de datos si la configuraste o, si no, solo mientras la sesión está abierta.</li>
+          <li>Si usas una IA en la nube (Claude o Gemini), tu petición y un extracto de los correos se envían a Anthropic o a Google. Con Ollama, todo queda en tu equipo.</li>
           <li>Puedes retirar el acceso y borrar tus datos cuando quieras desde Ajustes.</li>
         </ul>
         <button type="button" className="pc-link" onClick={openPrivacyPolicy}>Leer la política de privacidad completa</button>

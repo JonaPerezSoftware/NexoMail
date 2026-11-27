@@ -35,15 +35,15 @@ a{color:var(--accent);text-underline-offset:3px}
 <body>
 <main>
 <header><img src="icons/nexomail.svg" alt=""><h1>Privacidad y permisos</h1></header>
-<p class="meta">NexoMail · Proyecto de tesis de Marlon Aguiño y Jonathan Pérez · Versión 1 · 5 de noviembre de 2026</p>
+<p class="meta">NexoMail · Proyecto de tesis de Marlon Aguiño y Jonathan Pérez · Versión 2 · 27 de noviembre de 2026</p>
 
 <section class="summary" aria-labelledby="resumen">
 <h2 id="resumen">En resumen</h2>
 <ul>
 <li>NexoMail lee tus correos para mostrártelos, analizarlos y preparar acciones. <strong>Nada se envía, borra, mueve ni etiqueta sin tu aprobación</strong>, salvo lo que hagas tú directamente con los botones de la app.</li>
-<li>Tus credenciales de Google y Microsoft se guardan en la memoria temporal de la extensión, no en ningún servidor.</li>
-<li>El chat, los borradores, las preferencias y el historial se guardan en una base de datos PostgreSQL de <strong>tu propio equipo</strong>.</li>
-<li>Solo cuando usas la IA, tu petición y un extracto de los correos cargados se envían al proveedor configurado (Anthropic Claude, Google Gemini u Ollama local).</li>
+<li><strong>NexoMail nunca ve tu contraseña:</strong> inicias sesión en la página de Google o Microsoft, y NexoMail solo recibe un permiso de acceso temporal, que se guarda en la memoria temporal de la extensión, no en ningún servidor.</li>
+<li>El chat, los borradores, las preferencias y el historial se guardan <strong>solo en tu equipo</strong>: en tu base de datos PostgreSQL si la configuraste; si no, solo mientras la sesión está abierta.</li>
+<li>Solo cuando usas una IA en la nube (Claude o Gemini), tu petición y un extracto de los correos cargados se envían a Anthropic o a Google. Con Ollama, todo queda en tu equipo.</li>
 <li>No vendemos datos, no mostramos publicidad y no usamos analítica ni rastreo.</li>
 </ul>
 </section>
@@ -60,9 +60,10 @@ a{color:var(--accent);text-underline-offset:3px}
 <table>
 <thead><tr><th>Dato</th><th>Lugar</th><th>Cuánto tiempo</th></tr></thead>
 <tbody>
-<tr><td>Credenciales de Google y Microsoft</td><td>Memoria temporal de la extensión</td><td>Hasta cerrar el navegador. La sesión de Microsoft caduca a las 24 horas.</td></tr>
+<tr><td>Permisos de acceso de Google y Microsoft (nunca tu contraseña)</td><td>Memoria temporal de la extensión</td><td>Hasta cerrar el navegador. La sesión de Microsoft caduca a las 24 horas.</td></tr>
 <tr><td>Configuración (identificadores de aplicación, clave de enlace)</td><td>Almacenamiento local de la extensión</td><td>Hasta que la cambies o desinstales NexoMail</td></tr>
-<tr><td>Chat, borradores, preferencias e historial</td><td>PostgreSQL en tu equipo</td><td>Hasta que pulses «Vaciar datos» en Ajustes</td></tr>
+<tr><td>Chat, borradores, preferencias e historial</td><td>PostgreSQL en tu equipo, si lo configuraste. Sin base de datos, solo en la memoria de la app.</td><td>Con PostgreSQL, hasta que pulses «Vaciar datos» en Ajustes. Sin él, hasta cerrar o recargar NexoMail.</td></tr>
+<tr><td>Firma, libreta de contactos, historial de remitentes, categorías aprendidas y modelo de IA elegido</td><td>Almacenamiento de este navegador (solo direcciones, nombres y ajustes; nunca el contenido de los correos)</td><td>Hasta que borres los datos del navegador o desinstales NexoMail</td></tr>
 <tr><td>Correos y adjuntos</td><td>Permanecen en Gmail u Outlook. NexoMail solo los mantiene en memoria mientras los muestra.</td><td>Mientras la pestaña esté abierta</td></tr>
 </tbody>
 </table>
